@@ -5,7 +5,7 @@ from scipy.signal import chirp
 import os
 
 # --- 設定 ---
-OUTPUT_DIR = "test_signals"
+OUTPUT_DIR = "IROS/test_signals"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 DT = 0.01
@@ -80,26 +80,26 @@ p_f_exp3  = offset + amp * base_wave * (-1) # 逆位相 (180度ズレ)
 save_csv("exp3_frequency_sweep", p_df_exp3, p_f_exp3)
 
 # ==========================================
-# 4. Exp-4: Drumming Task (Impulse)
+# 4. Exp-4: Drumming Task (Slow & Heavy) -- 修正箇所 --
 # ==========================================
-# 目的: 構え(Up) -> 打撃(Down) -> 戻り(Up)
+# 目的: 確実に叩くためにBPMを落とし、Hit時間を長くする
 p_df_exp4 = np.zeros_like(TIME)
 p_f_exp4  = np.zeros_like(TIME)
 
-bpm = 120
-interval = 60 / bpm # 0.5s
-hit_duration = 0.08 # 80ms (打撃の一瞬)
+bpm = 60          # BPM 60 (1秒に1回) に変更
+interval = 60 / bpm 
+hit_duration = 0.20 # 200ms (0.2秒) まで延長。空気圧が追従する時間を確保。
 
 for i, t in enumerate(TIME):
     # 基本サイクル内での位置
     phase = t % interval
     
     if phase < hit_duration:
-        # HIT Action (振り下ろし)
-        p_df_exp4[i] = 0.0
-        p_f_exp4[i]  = 0.6 # MAX Power
+        # HIT Action (振り下ろし & 押し付け)
+        p_df_exp4[i] = 0.0 # 背屈を脱力
+        p_f_exp4[i]  = 0.6 # 底屈を最大加圧
     else:
-        # RETRACT / HOLD (構え)
+        # RETRACT / HOLD (構え & 戻り)
         p_df_exp4[i] = 0.4 # 持ち上げる
         p_f_exp4[i]  = 0.1 # テンション維持
 

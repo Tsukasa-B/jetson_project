@@ -32,7 +32,7 @@ import signal
 # System Configuration
 # ==========================================
 SERIAL_PORT = "/dev/ttyUSB0"
-BAUD_RATE = 460800       # High-speed UART required for 100Hz control
+BAUD_RATE = 230400       # High-speed UART required for 100Hz control
 CONTROL_DT = 0.01        # 10ms (100Hz) Loop
 
 # Communication Protocol
@@ -128,7 +128,7 @@ class ExperimentController:
         # 1. カレントの test_signals/
         # 2. カレント直下
         candidates = [
-            os.path.join("test_signals", name),
+            os.path.join("IROS/test_signals", name),
             name
         ]
         for path in candidates:
