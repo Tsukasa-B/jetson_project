@@ -205,6 +205,7 @@ class RLDeployer:
             try:
                 self.policy = torch.jit.load(MODEL_PATH, map_location=self.device)
                 self.policy.eval()
+                self.policy.to(self.device).float()
                 print(f"[Init] Policy loaded: {MODEL_PATH}")
             except Exception as e:
                 print(f"[Error] Failed to load model. {e}")
@@ -284,7 +285,7 @@ class RLDeployer:
                 # 4. Observation 結合
                 obs_tensor = torch.cat([
                     q, qd, prev_actions, phase_feats, bpm_feat, rhythm_feat
-                ]).unsqueeze(0)
+                ]).unsqueeze(0).to(self.device).float()
 
                 # 5. 推論 & 制御
                 if VERIFY_MODE:
