@@ -10,9 +10,10 @@ import tty
 import os
 import argparse
 import itertools
+import random
 
 # ==========================================
-# 設定 (実験計画書準拠)
+# 設定
 # ==========================================
 SERIAL_PORT = "/dev/ttyUSB0"
 BAUD_RATE = 115200
@@ -20,6 +21,7 @@ DT = 0.01          # 10ms
 
 MAX_PRESSURE = 0.6 # [MPa]
 MIN_PRESSURE = 0.0 # [MPa]
+GRIP_PRESSURE = 0.3 # 手首動作中にグリップがぶらつかないように軽く入れる
 
 # 通信フォーマット
 SEND_FMT = '>ddd'    # Header + DF, F, G (double x3)
@@ -36,12 +38,11 @@ class CustomDataCollector:
         self.start_time = 0.0
         self.serial_buffer = b''
         
-        # Exp 1用: ステップ遷移の生成 (42通り)
+        # Exp 1用: ステップ遷移の生成
         if self.args.exp == 1:
             levels = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-            # 全順列 (source -> target) を生成
             self.step_sequence = list(itertools.permutations(levels, 2))
-            self.step_duration = 3.0 # [sec]
+            self.step_duration = 3.0
             print(f"[Exp 1] Total Step Transitions: {len(self.step_sequence)}")
 
     def connect(self):
@@ -67,21 +68,18 @@ class CustomDataCollector:
     def _get_commands(self, t):
         """実験モードごとの指令値生成ロジック"""
         cmd_DF, cmd_F, cmd_G = 0.0, 0.0, 0.0
+        status_msg = ""
 
         # ---------------------------------------------------------
         # 【実験 1】 PAMF単独ステップ応答 (Pure Dynamics)
         # ---------------------------------------------------------
         if self.args.exp == 1:
-            # 3秒ごとにターゲットを切り替え
             idx = int(t / self.step_duration)
             if idx < len(self.step_sequence):
-                # 遷移の後半(target)を出力
-                # ※厳密な過渡応答を見るため、瞬時にtargetへ切り替える
                 target = self.step_sequence[idx][1]
                 cmd_F = target
             else:
-                cmd_F = 0.0 # 終了後は0
-            
+                cmd_F = 0.0
             cmd_DF = 0.0
             cmd_G = 0.0
 
@@ -90,56 +88,82 @@ class CustomDataCollector:
         # ---------------------------------------------------------
         elif self.args.exp == 2:
             f = self.args.freq
-            # Offset + Amp * sin(...)
-            # PAMF: 0.3 + 0.2 sin(wt)
             cmd_F = 0.3 + 0.2 * np.sin(2 * np.pi * f * t)
-            # PAMDF: 0.3 + 0.2 sin(wt + pi) (逆位相)
             cmd_DF = 0.3 + 0.2 * np.sin(2 * np.pi * f * t + np.pi)
-            # PAMG: 0.3 + 0.15 sin(wt + pi/2) (90degずれ)
             cmd_G = 0.3 + 0.15 * np.sin(2 * np.pi * f * t + np.pi / 2)
 
         # ---------------------------------------------------------
         # 【実験 3】 有効収縮率 (Slack) 同定
         # ---------------------------------------------------------
         elif self.args.exp == 3:
-            # Ramp速度: 0.01 MPa/s
-            ramp_val = 0.01 * t
+            ramp_val = 0.05 * t # 0.05 MPa/s
             
-            if self.args.target == 'DF': # 3-A
-                cmd_DF = np.clip(ramp_val, 0.0, 0.3) # 0 -> 0.3
+            if self.args.target == 'DF':
+                cmd_DF = np.clip(ramp_val, 0.0, 0.6)
                 cmd_F = 0.0
                 cmd_G = 0.0
-                
-            elif self.args.target == 'F': # 3-B
-                cmd_DF = 0.5 # 固定 (Holding)
-                cmd_F = np.clip(ramp_val, 0.0, 0.6) # 0 -> 0.6
+            elif self.args.target == 'F':
+                cmd_DF = 0.6
+                cmd_F = np.clip(ramp_val, 0.0, 0.6)
                 cmd_G = 0.0
-                
-            elif self.args.target == 'G': # 3-C
-                cmd_DF = 0.6 # 最大背屈固定
+            elif self.args.target == 'G':
+                cmd_DF = 0.6
                 cmd_F = 0.0
-                cmd_G = np.clip(ramp_val, 0.0, 0.6) # 0 -> 0.6
+                cmd_G = np.clip(ramp_val, 0.0, 0.6)
 
         # ---------------------------------------------------------
-        # 【実験 4】 Sim-to-Real検証用 (Validation)
+        # 【実験 4】 Validation Sequence (5 Patterns)
         # ---------------------------------------------------------
         elif self.args.exp == 4:
-            # ActuatorNet学習データに近いランダム波形
-            # 2秒ごとにシードを変えてランダムステップ＋チャープ
-            for i, offset in enumerate([0, 1, 2]):
-                seed_step = int(t / 2.0) + offset * 1000
-                np.random.seed(seed_step)
-                step = np.random.uniform(0.0, 0.6)
-                
-                freq = 0.5 + 4.5 * (np.sin(t / (15.0 + offset)) ** 2)
-                sine = 0.1 * np.sin(2 * np.pi * freq * t)
-                val = np.clip(step + sine, 0.0, 0.6)
-                
-                if i == 0: cmd_DF = val
-                elif i == 1: cmd_F = val
-                elif i == 2: cmd_G = val
+            # シーケンス定義 (時間, パターン名, DF, F, G)
+            # 累積時間を計算しやすいように Duration で管理
+            sequence = [
+                # 1. Max Up (2s)
+                {"dur": 2.0, "name": "1. Max UP",     "vals": [0.6, 0.0, GRIP_PRESSURE]},
+                # 2. Max Down (2s)
+                {"dur": 2.0, "name": "2. Max DOWN",   "vals": [0.0, 0.6, GRIP_PRESSURE]},
+                # 3. Violent Shake (4s) - 特別処理
+                {"dur": 4.0, "name": "3. Violent Shake", "vals": "SHAKE"},
+                # 4. Long Hold Up (4s)
+                {"dur": 4.0, "name": "4. Long Hold UP",  "vals": [0.6, 0.0, GRIP_PRESSURE]},
+                # 5. Long Hold Down (4s)
+                {"dur": 4.0, "name": "5. Long Hold DOWN","vals": [0.0, 0.6, GRIP_PRESSURE]},
+                # End
+                {"dur": 999.0, "name": "FINISHED",       "vals": [0.0, 0.0, 0.0]}
+            ]
 
-        return np.clip([cmd_DF, cmd_F, cmd_G], MIN_PRESSURE, MAX_PRESSURE)
+            # 現在時刻 t がどのフェーズにあるか探す
+            elapsed = 0.0
+            current_phase = sequence[-1] # デフォルトは終了状態
+            
+            for phase in sequence:
+                if t < elapsed + phase["dur"]:
+                    current_phase = phase
+                    break
+                elapsed += phase["dur"]
+
+            # コマンド決定
+            phase_t = t - elapsed # フェーズ内時刻
+            
+            if current_phase["vals"] == "SHAKE":
+                # 0.25秒ごとに切り替え
+                cycle = int(phase_t / 0.25)
+                if cycle % 2 == 0:
+                    cmd_DF, cmd_F, cmd_G = 0.6, 0.0, GRIP_PRESSURE # UP
+                else:
+                    cmd_DF, cmd_F, cmd_G = 0.0, 0.6, GRIP_PRESSURE # DOWN
+            else:
+                cmd_DF, cmd_F, cmd_G = current_phase["vals"]
+            
+            status_msg = f"[Exp4] {current_phase['name']} (T={phase_t:.1f}s)"
+            
+            # シーケンス終了判定 (最後のフェーズに入ったら記録停止しても良いが、ここでは0を送り続ける)
+            if current_phase["name"] == "FINISHED" and phase_t > 1.0:
+                print("\n[INFO] Sequence Finished. Stopping...")
+                self.is_recording = False
+                self.is_running = False # プログラム終了
+
+        return np.clip([cmd_DF, cmd_F, cmd_G], MIN_PRESSURE, MAX_PRESSURE), status_msg
 
     def send_packet(self, cmd_list):
         if self.ser and self.ser.is_open:
@@ -165,22 +189,25 @@ class CustomDataCollector:
         try:
             while self.is_running:
                 loop_start = time.time()
-                
-                # 録画中のみ時間を進める（開始時にt=0リセット）
                 t_current = 0.0
+                status = ""
+                
                 if self.is_recording:
                     t_current = time.time() - self.start_time
                 
                 # 1. 指令生成
                 if self.is_recording:
-                    cmds = self._get_commands(t_current)
+                    cmds, status = self._get_commands(t_current)
+                    # 状態表示 (Exp 4用)
+                    if status:
+                        print(f"\r{status} CMD: [{cmds[0]:.1f}, {cmds[1]:.1f}, {cmds[2]:.1f}]   ", end="")
+                    elif self.args.exp == 3 and int(t_current*10)%5==0:
+                        print(f"\r[Exp3] T={t_current:.1f}s CMD: {cmds}", end="")
                 else:
-                    # 待機中はExperiment 3の初期位置保持のため、
-                    # 3-B/3-Cの場合は拮抗筋に圧を入れる必要がある
                     if self.args.exp == 3 and self.args.target == 'F':
-                        cmds = [0.5, 0.0, 0.0] # DF保持
+                        cmds = [0.6, 0.0, 0.0]
                     elif self.args.exp == 3 and self.args.target == 'G':
-                        cmds = [0.6, 0.0, 0.0] # DF保持
+                        cmds = [0.6, 0.0, 0.0]
                     else:
                         cmds = [0.0, 0.0, 0.0]
 
@@ -201,13 +228,11 @@ class CustomDataCollector:
                                 self.logs.append({
                                     "timestamp": t_current,
                                     "exp_mode": self.args.exp,
-                                    "target_arg": self.args.target if self.args.exp==3 else "",
                                     "cmd_DF": cmds[0], "cmd_F": cmds[1], "cmd_G": cmds[2],
                                     "meas_pres_DF": recv[0], "meas_pres_F": recv[1], "meas_pres_G": recv[2],
                                     "meas_ang_wrist": recv[3], "meas_ang_hand": recv[4],
                                     "p_flag": recv[5]
                                 })
-                            
                             self.serial_buffer = self.serial_buffer[RECV_PACKET_LEN:]
                         except Exception:
                             self.serial_buffer = self.serial_buffer[1:]
@@ -228,7 +253,7 @@ class CustomDataCollector:
             1: "Step Response (PAM-F)",
             2: "Multi-Axis Hysteresis",
             3: "Slack Identification",
-            4: "Validation Data"
+            4: "Validation Sequence (5 Patterns)"
         }
         return names.get(self.args.exp, "Unknown")
 
@@ -245,18 +270,18 @@ class CustomDataCollector:
                 break
 
     def close(self):
+        print("\nStopping...")
         self.send_packet([0.0, 0.0, 0.0])
         if self.ser: self.ser.close()
         if self.logs:
-            # 保存ファイル名の生成
             suffix = ""
             if self.args.exp == 1: suffix = "_step_pamf"
             elif self.args.exp == 2: suffix = f"_hysteresis_{self.args.freq}Hz"
             elif self.args.exp == 3: suffix = f"_slack_pam{self.args.target.lower()}"
-            elif self.args.exp == 4: suffix = "_validation"
+            elif self.args.exp == 4: suffix = "_validation_seq"
             
             filename = f"data_exp{self.args.exp}{suffix}_{int(time.time())}.csv"
-            print(f"\n[SAVE] {filename}")
+            print(f"[SAVE] {filename}")
             pd.DataFrame(self.logs).to_csv(filename, index=False)
 
 if __name__ == "__main__":
