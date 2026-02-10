@@ -1,4 +1,7 @@
-# generate_test_signals_v2.py
+'''
+generate_test_signals.py
+python IROS/verification/generate_test_signals.py
+'''
 import numpy as np
 import pandas as pd
 from scipy.signal import chirp
@@ -8,7 +11,7 @@ import os
 OUTPUT_DIR = "IROS/test_signals"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-DT = 0.01
+DT = 0.02
 DURATION = 20.0
 TIME = np.arange(0, DURATION, DT)
 
@@ -54,12 +57,12 @@ for i, t in enumerate(TIME):
     cycle = int(t // 4)
     if cycle % 2 == 0:
         # State A: Up (DF pull)
-        p_df_exp2[i] = 0.5
+        p_df_exp2[i] = 0.6
         p_f_exp2[i]  = 0.1 # 完全に0にすると外れる恐れがあるため0.1残す
     else:
         # State B: Down (F pull)
         p_df_exp2[i] = 0.1
-        p_f_exp2[i]  = 0.5
+        p_f_exp2[i]  = 0.6
 
 save_csv("exp2_step_response", p_df_exp2, p_f_exp2)
 
