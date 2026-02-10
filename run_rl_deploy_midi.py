@@ -9,16 +9,16 @@ Feature:
 Usage:
   python run_rl_deploy_midi.py --midi songs/drum_pattern.mid --bpm 120
   python run_rl_deploy_midi.py --midi songs/pattern.mid --model models/best_policy_v2.pt
-  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-17.pt
-  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-17.pt
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --model models/modelB_DR_2999_02-19.pt
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --model models/modelB_DR_2999_02-19.pt
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --model models/modelB_DR_2999_02-19.pt
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --model models/modelB_DR_2999_02-19.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --model models/modelB_DR_2999_02-19.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --model models/modelB_DR_2999_02-19.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --model models/modelB_DR_2999_02-19.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --model models/modelB_DR_2999_02-19.pt
+  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --model models/modelB_DR_2999_02-22.pt
 """
 
 import serial
@@ -31,7 +31,9 @@ import threading
 import os
 import argparse
 import copy
-import mido  # pip install mido
+
+# ★ 追加: 外部のPyTorch版ジェネレータをインポート
+from midi_rhythm_generator import MidiRhythmGenerator
 
 # ==========================================
 # 0. 引数解析 & 定数定義
@@ -47,22 +49,18 @@ args = parser.parse_args()
 
 # System Config
 SERIAL_PORT = args.port
-BAUD_RATE = 230400      # MicroLabBox (200Hz Send)
-CONTROL_DT = 0.02       # 50Hz Control Loop
-P_MAX = 0.6             # Max Pressure [MPa]
+BAUD_RATE = 230400
+CONTROL_DT = 0.02
+P_MAX = 0.6
+LOOKAHEAD_STEPS = 25
 
-# Lookahead Config
-LOOKAHEAD_STEPS = 25    # 0.5s / 0.02s
-
-# Communication Protocol
-SEND_FMT = '>ddd'       # [Cmd_DF, Cmd_F, Cmd_G]
-# 変更箇所: MicroLabBoxからの7要素を受け取る
-RECV_FMT = '>ddddddd'   # [P_DF, P_F, P_G, wrist_Angle, grip_angle, Flag, Force]
+SEND_FMT = '>ddd'
+RECV_FMT = '>ddddddd'
 HEADER = b'\xff\xff'
 RECV_PACKET_LEN = 2 + 8 * 7
 
 # ==========================================
-# 1. センサー受信クラス (Async 200Hz)
+# 1. センサー受信クラス (変更なしのため省略せずにそのまま使用)
 # ==========================================
 class SensorReceiver(threading.Thread):
     def __init__(self, ser):
@@ -75,7 +73,6 @@ class SensorReceiver(threading.Thread):
         self.lock = threading.Lock()
         self.daemon = True
 
-        # 変更箇所: 速度計算用のバッファを追加
         self.prev_time = time.time()
         self.prev_wrist_angle = 0.0
         self.prev_grip_angle = 0.0
@@ -110,7 +107,6 @@ class SensorReceiver(threading.Thread):
         try:
             data = struct.unpack(RECV_FMT, packet_bytes)
             
-            # 変更箇所: 角度を取り出し、差分から角速度を計算する
             wrist_angle_deg = data[3]
             grip_angle_deg  = data[4]
             
@@ -124,7 +120,6 @@ class SensorReceiver(threading.Thread):
                 wrist_velocity = 0.0
                 grip_velocity  = 0.0
                 
-            # 次回の計算用に保存
             self.prev_time = current_time
             self.prev_wrist_angle = wrist_angle_deg
             self.prev_grip_angle  = grip_angle_deg
@@ -134,9 +129,9 @@ class SensorReceiver(threading.Thread):
                 'meas_pres_F':     data[1],
                 'meas_pres_G':     data[2],
                 'wrist_angle_deg': wrist_angle_deg,
-                'wrist_velocity':  wrist_velocity,  # 算出した手首速度
+                'wrist_velocity':  wrist_velocity,
                 'grip_angle_deg':  grip_angle_deg,
-                'grip_velocity':   grip_velocity,   # 算出したGrip速度
+                'grip_velocity':   grip_velocity,
                 'flag':            data[5],
                 'force_N':         data[6]
             }
@@ -145,7 +140,7 @@ class SensorReceiver(threading.Thread):
                     self.sensor_logs = []
                     self.clear_flag = False
                 self.sensor_logs.append(sample)
-                self.latest_data = sample  # RL推論用に常に最新を保持
+                self.latest_data = sample
         except: pass
 
     def clear_buffer_for_sync(self):
@@ -163,75 +158,6 @@ class SensorReceiver(threading.Thread):
         with self.lock:
             return self.sensor_logs[:]
 
-# ==========================================
-# 2. MIDI リズム生成クラス (numpy版)
-# ==========================================
-class MidiRhythmGenerator:
-    def __init__(self, midi_path, dt, horizon_steps, target_force, override_bpm=None):
-        self.dt = dt
-        self.horizon_steps = horizon_steps
-        self.target_force = target_force
-        
-        # --- 変更箇所: 学習環境と一致させる ---
-        # width_sec = 0.035 に対応する sigma (0.035 / 2.0 = 0.0175)
-        self.sigma = 0.0175 # 0.025 -> 0.0175
-        # --------------------------------------
-        
-        try:
-            mid = mido.MidiFile(midi_path)
-            print(f"[MIDI] Loaded: {midi_path}")
-        except Exception as e:
-            print(f"[Error] Failed to load MIDI: {e}")
-            exit(1)
-
-        self.bpm = 120.0 
-        for msg in mid:
-            if msg.type == 'set_tempo':
-                self.bpm = mido.tempo2bpm(msg.tempo)
-                break
-        
-        if override_bpm:
-            print(f"[MIDI] Overriding BPM: {self.bpm:.1f} -> {override_bpm:.1f}")
-            self.bpm = override_bpm
-
-        self.spikes = []
-        ticks_per_beat = mid.ticks_per_beat
-        sec_per_tick = (60.0 / self.bpm) / ticks_per_beat
-
-        for track in mid.tracks:
-            track_time = 0.0
-            for msg in track:
-                track_time += msg.time * sec_per_tick
-                if msg.type == 'note_on' and msg.velocity > 0:
-                    self.spikes.append(track_time)
-        
-        self.spikes = np.array(sorted(self.spikes))
-        self.duration_sec = self.spikes[-1] + 2.0 if len(self.spikes) > 0 else 10.0
-        print(f"[MIDI] Total Notes: {len(self.spikes)} | Duration: {self.duration_sec:.1f}s | BPM: {self.bpm:.1f}")
-
-    def get_state(self, t_now):
-        phase = (t_now * (self.bpm / 60.0) * 2 * np.pi) % (2 * np.pi)
-        traj = np.zeros(self.horizon_steps)
-        t_futures = t_now + np.arange(self.horizon_steps) * self.dt
-        
-        search_radius = 0.5 
-        idx_start = np.searchsorted(self.spikes, t_now - 0.1)
-        idx_end = np.searchsorted(self.spikes, t_now + search_radius + 0.1)
-        
-        relevant_spikes = self.spikes[idx_start:idx_end]
-
-        if len(relevant_spikes) > 0:
-            diffs = t_futures[:, None] - relevant_spikes[None, :]
-            mask = np.abs(diffs) < (self.sigma * 4)
-            weights = np.zeros_like(diffs)
-            
-            # --- 変更箇所: 指数を2乗から4乗(Super-Gaussian)へ変更 ---
-            weights[mask] = np.exp(-0.5 * (diffs[mask] / self.sigma)**4)
-            # ------------------------------------------------------------
-            
-            traj = np.max(weights, axis=1) * self.target_force
-
-        return phase, traj
 
 # ==========================================
 # 3. メイン制御クラス (MIDI Deployer)
@@ -255,13 +181,22 @@ class MidiDeployer:
             print(f"[Error] Serial Failed: {e}")
             exit(1)
 
+        # ★ 修正: 外部のPyTorch版に合わせて引数を変更
         self.rhythm_gen = MidiRhythmGenerator(
-            args.midi, CONTROL_DT, LOOKAHEAD_STEPS, args.force_scale, args.bpm
+            midi_path=args.midi, 
+            device=self.device,      # デバイスを渡す
+            dt=CONTROL_DT, 
+            target_force=args.force_scale, 
+            lookahead_steps=LOOKAHEAD_STEPS,
+            override_bpm=args.bpm  # 追加した引数
         )
 
         self.cmd_logs = []
         self.last_actions = np.zeros(3) 
         self.start_time = None
+
+        self.prev_q_wrist = None
+        self.prev_q_grip = None
 
     def run(self):
         print("\n=== MIDI DEPLOYMENT START ===")
@@ -284,37 +219,44 @@ class MidiDeployer:
                     print("\nSong Finished.")
                     break
 
-                # 1. 最新のセンサーデータ取得 (RL用)
                 sensor = self.receiver.get_latest()
                 if sensor is None:
                     time.sleep(0.001)
                     continue
 
-                # 2. 観測ベクトル構築 (Dim=35)
                 q_wrist = np.radians(sensor['wrist_angle_deg'])
-                qd_wrist = np.radians(sensor['wrist_velocity']) # 変更箇所: 正しいキー名に変更
-                q_grip  = np.radians(sensor['grip_angle_deg'])  # 変更箇所: Grip角度を取得
-                qd_grip = np.radians(sensor['grip_velocity'])   # 変更箇所: Grip速度を取得
+                q_grip  = np.radians(sensor['grip_angle_deg'])
+                # 2. ★ 速度の安定計算 (50Hzの安定したループ周期 dt=0.02 で割る)
+                if self.prev_q_wrist is None:
+                    qd_wrist = 0.0
+                    qd_grip  = 0.0
+                else:
+                    qd_wrist = (q_wrist - self.prev_q_wrist) / CONTROL_DT
+                    qd_grip  = (q_grip - self.prev_q_grip) / CONTROL_DT
+
+                self.prev_q_wrist = q_wrist
+                self.prev_q_grip = q_grip
                 
-                # 変更箇所: シミュレーション環境と同じく、WristとGrip両方をベクトルに含める
                 q_vec  = torch.tensor([q_wrist, q_grip], device=self.device)
                 qd_vec = torch.tensor([qd_wrist, qd_grip], device=self.device)
-                
                 obs_action = torch.tensor(self.last_actions, device=self.device)
                 
+                # ★ 修正: traj はすでにTensorであり、0~1に正規化されている
                 phase, traj = self.rhythm_gen.get_state(t_math)
                 
                 obs_phase = torch.tensor([np.sin(phase), np.cos(phase)], device=self.device)
                 obs_bpm = torch.tensor([self.rhythm_gen.bpm / 180.0], device=self.device)
-                obs_traj = torch.tensor(traj / args.force_scale, device=self.device)
+                obs_traj = traj  # 二重で割らない！
 
                 obs = torch.cat([q_vec, qd_vec, obs_action, obs_phase, obs_bpm, obs_traj])
                 obs = obs.unsqueeze(0).float()
 
                 # 3. 推論 & 送信
                 if args.verify:
-                    bar = "#" * int(traj[0])
-                    print(f"\r[Verify] t:{t_math:4.2f} | F:{sensor['force_N']:5.1f} | Tgt:{traj[0]:5.1f} {bar:10s}", end="")
+                    # Verify表示用に実数値(ニュートン)に戻してバーを描画
+                    tgt_force_val = traj[0].item() * args.force_scale
+                    bar = "#" * int(tgt_force_val)
+                    print(f"\r[Verify] t:{t_math:4.2f} | F:{sensor['force_N']:5.1f} | Tgt:{tgt_force_val:5.1f} {bar:10s}", end="")
                     cmd_pres = [0.0, 0.0, 0.0]
                     action = np.zeros(3)
                 else:
@@ -324,8 +266,6 @@ class MidiDeployer:
                     self.last_actions = np.clip(action, -1.0, 1.0)
                     p_df = (self.last_actions[0] + 1) / 2 * P_MAX
                     p_f  = (self.last_actions[1] + 1) / 2 * P_MAX
-                    
-                    # Gripは現在0.5MPaに固定（ポリシーが出力する場合は変更可能）
                     p_g  = 0.5 
                     
                     cmd_pres = [p_df, p_f, p_g]
@@ -334,10 +274,10 @@ class MidiDeployer:
                 # 4. 指令値ログの保存
                 self.cmd_logs.append({
                     'cmd_time': t_math,
-                    'target_force': traj[0],
+                    'target_force': traj[0].item() * args.force_scale, # ★ ログには実数値で保存
                     'action_DF': action[0],
                     'action_F':  action[1],
-                    'action_G':  action[2] if len(action) > 2 else 0.0, # 変更箇所: RL出力を記録
+                    'action_G':  action[2],
                     'cmd_DF': cmd_pres[0],
                     'cmd_F':  cmd_pres[1],
                     'cmd_G':  cmd_pres[2]
@@ -345,7 +285,6 @@ class MidiDeployer:
 
                 step_idx += 1
 
-                # 5. 絶対時刻ベースの待機 (Drift防止)
                 target_next_time = self.start_time + (step_idx * CONTROL_DT)
                 while time.perf_counter() < target_next_time:
                     time.sleep(0.0005)

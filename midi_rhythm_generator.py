@@ -1,5 +1,4 @@
 # source/porcaro_rl/porcaro_rl/tasks/direct/porcaro_rlv1/midi_rhythm_generator.py
-# (※または配置されているディレクトリの同名ファイル)
 
 import torch
 import torch.nn.functional as F
@@ -11,31 +10,29 @@ class MidiRhythmGenerator:
     MIDIファイルを読み込み、強化学習エージェント用のターゲット軌道を生成するクラス。
     学習環境(rhythm_generator.py)と完全に等価な信号処理を行います。
     """
-    def __init__(self, midi_path, device, dt=0.02, target_force=20.0, lookahead_steps=25):
+    def __init__(self, midi_path, device, dt=0.02, target_force=20.0, lookahead_steps=25, override_bpm=None):
         self.device = device
         self.dt = dt
         self.target_force = target_force
         self.lookahead_steps = lookahead_steps
         
-        # --- 変更箇所: 学習環境と完全に一致させる ---
-        width_sec = 0.035 # 0.05 -> 0.035
+        # # 学習環境と完全に一致させる
+        width_sec = 0.035 
         sigma = width_sec / 2.0
         kernel_radius = int(width_sec / dt)
         t_vals = torch.arange(-kernel_radius, kernel_radius + 1, device=device, dtype=torch.float32) * dt
         
-        # 指数を2乗から4乗(Super-Gaussian)へ変更
+        # Super-Gaussian (4乗)あとで2→4に変更
         self.kernel = (target_force * torch.exp(-0.5 * (t_vals / sigma) ** 4)).view(1, 1, -1)
-        # ------------------------------------------------
-        
         self.padding = kernel_radius
 
-        # MIDIロードと軌道生成
-        self.bpm, self.trajectory_buffer, self.duration_sec = self._load_and_process_midi(midi_path)
+        # MIDIロードと軌道生成 (override_bpmを渡す)
+        self.bpm, self.trajectory_buffer, self.duration_sec = self._load_and_process_midi(midi_path, override_bpm)
         
         print(f"[MidiGen] Loaded: {midi_path}")
         print(f"          BPM: {self.bpm:.1f}, Duration: {self.duration_sec:.1f}s")
 
-    def _load_and_process_midi(self, midi_path):
+    def _load_and_process_midi(self, midi_path, override_bpm):
         mid = mido.MidiFile(midi_path)
         
         tempo = 500000 
@@ -43,13 +40,19 @@ class MidiRhythmGenerator:
             if msg.type == 'set_tempo':
                 tempo = msg.tempo
                 break
-        bpm = mido.tempo2bpm(tempo)
         
+        original_bpm = mido.tempo2bpm(tempo)
+        bpm = override_bpm if override_bpm is not None else original_bpm
+        
+        # BPMが上書きされた場合、時間の長さをスケーリングする
+        time_scale = original_bpm / bpm if override_bpm else 1.0
+
         current_time = 0.0
         spikes = [] 
         
         for msg in mid.merged_track:
-            time_delta = mido.tick2second(msg.time, mid.ticks_per_beat, tempo)
+            # 時間差分にスケーリングを掛ける
+            time_delta = mido.tick2second(msg.time, mid.ticks_per_beat, tempo) * time_scale
             current_time += time_delta
             
             if msg.type == 'note_on' and msg.velocity > 0:
@@ -91,4 +94,5 @@ class MidiRhythmGenerator:
             chunk = torch.zeros(self.lookahead_steps, device=self.device)
             chunk[:valid_len] = self.trajectory_buffer[current_step:]
             
+        # ★ 学習環境と同様に「正規化されたTensor (0.0〜1.0)」を返す
         return phase_rad, chunk / self.target_force
