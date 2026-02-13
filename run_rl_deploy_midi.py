@@ -9,16 +9,15 @@ Feature:
 Usage:
   python run_rl_deploy_midi.py --midi songs/drum_pattern.mid --bpm 120
   python run_rl_deploy_midi.py --midi songs/pattern.mid --model models/best_policy_v2.pt
-  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-22.pt
-  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-22.pt
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --model models/modelB_DR_2999_02-22.pt
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --model models/modelB_DR_2999_02-22.pt
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --model models/modelB_DR_2999_02-22.pt
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --model models/modelB_DR_2999_02-22.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --model models/modelB_DR_2999_02-22.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --model models/modelB_DR_2999_02-22.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --model models/modelB_DR_2999_02-22.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --model models/modelB_DR_2999_02-22.pt
+  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-25.pt
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --model models/modelB_DR_2999_02-25.pt
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --model models/modelB_DR_2999_02-25.pt
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --model models/modelB_DR_2999_02-25.pt
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --model models/modelB_DR_2999_02-25.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --model models/modelB_DR_2999_02-25.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --model models/modelB_DR_2999_02-25.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --model models/modelB_DR_2999_02-25.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --model models/modelB_DR_2999_02-25.pt
 """
 
 import serial
@@ -269,7 +268,7 @@ class MidiDeployer:
                     self.last_actions = np.clip(action, -1.0, 1.0)
                     p_df = (self.last_actions[0] + 1) / 2 * P_MAX
                     p_f  = (self.last_actions[1] + 1) / 2 * P_MAX
-                    p_g  = 0.5 
+                    p_g  = (self.last_actions[2] + 1) / 2 * P_MAX
                     
                     cmd_pres = [p_df, p_f, p_g]
                     self._send_pressure(*cmd_pres)
