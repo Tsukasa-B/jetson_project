@@ -9,15 +9,16 @@ Feature:
 Usage:
   python run_rl_deploy_midi.py --midi songs/drum_pattern.mid --bpm 120
   python run_rl_deploy_midi.py --midi songs/pattern.mid --model models/best_policy_v2.pt
-  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-25.pt
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --model models/modelB_DR_2999_02-25.pt
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --model models/modelB_DR_2999_02-25.pt
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --model models/modelB_DR_2999_02-25.pt
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --model models/modelB_DR_2999_02-25.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --model models/modelB_DR_2999_02-25.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --model models/modelB_DR_2999_02-25.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --model models/modelB_DR_2999_02-25.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --model models/modelB_DR_2999_02-25.pt
+  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-26.pt
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --model models/modelB_DR_2999_02-26.pt
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --model models/modelB_DR_2999_02-26.pt
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --model models/modelB_DR_2999_02-26.pt
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --model models/modelB_DR_2999_02-26.pt
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm160.mid --model models/modelB_DR_2999_02-26.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --model models/modelB_DR_2999_02-26.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --model models/modelB_DR_2999_02-26.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --model models/modelB_DR_2999_02-26.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --model models/modelB_DR_2999_02-26.pt
 """
 
 import serial
