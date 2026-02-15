@@ -83,27 +83,31 @@ p_f_exp3  = offset + amp * base_wave * (-1) # 逆位相 (180度ズレ)
 save_csv("exp3_frequency_sweep", p_df_exp3, p_f_exp3)
 
 # ==========================================
-# 4. Exp-4: Drumming Task (Slow & Heavy) -- 修正箇所 --
+# 4. Exp-4: Drumming Task (Calibration Focus) -- 1.0s HIT Ver. --
 # ==========================================
-# 目的: 確実に叩くためにBPMを落とし、Hit時間を長くする
+# 目的: 高周波特性による乖離を避け、静的な「力・変位」の関係を正確にキャリブレーションする。
+# 1秒間の加圧により、空気圧が目標値(0.6MPa)に完全に到達した状態での挙動を確認。
+
 p_df_exp4 = np.zeros_like(TIME)
 p_f_exp4  = np.zeros_like(TIME)
 
-bpm = 60          # BPM 60 (1秒に1回) に変更
-interval = 60 / bpm 
-hit_duration = 0.20 # 200ms (0.2秒) まで延長。空気圧が追従する時間を確保。
+interval = 5.0      # 5秒サイクル
+hit_duration = 1.0  # 変更箇所: 1.0秒間振り下ろし(HIT)を継続。
 
 for i, t in enumerate(TIME):
-    # 基本サイクル内での位置
     phase = t % interval
     
     if phase < hit_duration:
-        # HIT Action (振り下ろし & 押し付け)
-        p_df_exp4[i] = 0.0 # 背屈を脱力
-        p_f_exp4[i]  = 0.6 # 底屈を最大加圧
+        # --- HIT / PRESS (1.0秒間) ---
+        # 底屈(F)を最大にして打面に押し付ける。
+        # 1秒あればバルブの遅延やチューブ内の圧力伝播の影響が消え、
+        # シミュレーション上の「Model B」の静的な剛性と比較可能。
+        p_df_exp4[i] = 0.0 
+        p_f_exp4[i]  = 0.6 
     else:
-        # RETRACT / HOLD (構え & 戻り)
-        p_df_exp4[i] = 0.4 # 持ち上げる
-        p_f_exp4[i]  = 0.1 # テンション維持
+        # --- RETRACT / HOLD (4.0秒間) ---
+        # 4秒間かけてゆっくり、かつ確実に元の位置へ戻す。
+        p_df_exp4[i] = 0.4 
+        p_f_exp4[i]  = 0.1 
 
-save_csv("exp4_drumming_task", p_df_exp4, p_f_exp4)
+save_csv("exp4_drumming_slow_1s", p_df_exp4, p_f_exp4)
