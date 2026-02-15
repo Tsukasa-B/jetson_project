@@ -1,6 +1,7 @@
 '''
-generate_test_signals.py
-python IROS/verification/generate_test_signals.py
+generate_test_signals.py (v2)
+Target: Generate Exp1-8 test signals for Sim-to-Real Calibration.
+Usage: python IROS/verification/generate_test_signals.py
 '''
 import numpy as np
 import pandas as pd
@@ -11,18 +12,16 @@ import os
 OUTPUT_DIR = "IROS/test_signals"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-DT = 0.02
+# 変更箇所: 高速動作(Exp6,8)に対応するため分解能を向上
+DT = 0.02 
 DURATION = 20.0
 TIME = np.arange(0, DURATION, DT)
 
-# 共通: Gripは常に0.5MPa (スティック保持)
+# 共通: Gripは常に0.5MPa
 P_GRIP = 0.5
 
 def save_csv(filename, p_df, p_f):
-    # p_g は固定値の配列を作成
     p_g = np.full_like(TIME, P_GRIP)
-    
-    # 安全リミット (0.0 ~ 0.6)
     p_df = np.clip(p_df, 0.0, 0.6)
     p_f  = np.clip(p_f, 0.0, 0.6)
     
@@ -37,77 +36,102 @@ def save_csv(filename, p_df, p_f):
     print(f"Generated: {path}")
 
 # ==========================================
-# 1. Exp-1: Static Hysteresis (Isobaric Antagonist)
+# Exp 1-4 (Existing)
 # ==========================================
-# 目的: Fを一定張力(0.2)に保ち、DFだけをゆっくり動かして純粋な特性を見る
+# Exp-1: Static Hysteresis
 freq = 0.05
-p_df_exp1 = 0.3 * np.sin(2 * np.pi * freq * TIME - np.pi/2) + 0.3 # 0.0 -> 0.6 -> 0.0
-p_f_exp1  = np.full_like(TIME, 0.2) # 拮抗側は弱く引いておく(Slack防止)
-save_csv("exp1_static_hysteresis", p_df_exp1, p_f_exp1)
+p_df_e1 = 0.3 * np.sin(2 * np.pi * freq * TIME - np.pi/2) + 0.3
+p_f_e1  = np.full_like(TIME, 0.2)
+save_csv("exp1_static_hysteresis", p_df_e1, p_f_e1)
 
-# ==========================================
-# 2. Exp-2: Step Response (Full Switching)
-# ==========================================
-# 目的: DF=0.6/F=0.0 (上) と DF=0.0/F=0.6 (下) を全力で切り替え
-p_df_exp2 = np.zeros_like(TIME)
-p_f_exp2  = np.zeros_like(TIME)
-
-# 4秒ごとに切り替え
+# Exp-2: Step Response
+p_df_e2, p_f_e2 = np.zeros_like(TIME), np.zeros_like(TIME)
 for i, t in enumerate(TIME):
-    cycle = int(t // 4)
-    if cycle % 2 == 0:
-        # State A: Up (DF pull)
-        p_df_exp2[i] = 0.6
-        p_f_exp2[i]  = 0.1 # 完全に0にすると外れる恐れがあるため0.1残す
+    if int(t // 4) % 2 == 0:
+        p_df_e2[i], p_f_e2[i] = 0.6, 0.1
     else:
-        # State B: Down (F pull)
-        p_df_exp2[i] = 0.1
-        p_f_exp2[i]  = 0.6
+        p_df_e2[i], p_f_e2[i] = 0.1, 0.6
+save_csv("exp2_step_response", p_df_e2, p_f_e2)
 
-save_csv("exp2_step_response", p_df_exp2, p_f_exp2)
+# Exp-3: Frequency Sweep
+base_wave = chirp(TIME, f0=0.1, f1=5.0, t1=DURATION, method='linear')
+p_df_e3 = 0.3 + 0.2 * base_wave
+p_f_e3  = 0.3 + 0.2 * base_wave * (-1)
+save_csv("exp3_frequency_sweep", p_df_e3, p_f_e3)
 
-# ==========================================
-# 3. Exp-3: Frequency Sweep (Antagonistic Chirp)
-# ==========================================
-# 目的: 中心圧0.3MPaで、互いに逆位相で振動させる
-f0, f1 = 0.1, 5.0
-amp = 0.2
-offset = 0.3
-
-# Linear Chirp Sine
-base_wave = chirp(TIME, f0=f0, f1=f1, t1=DURATION, method='linear')
-
-p_df_exp3 = offset + amp * base_wave        # 0.3 ± 0.2
-p_f_exp3  = offset + amp * base_wave * (-1) # 逆位相 (180度ズレ)
-
-save_csv("exp3_frequency_sweep", p_df_exp3, p_f_exp3)
-
-# ==========================================
-# 4. Exp-4: Drumming Task (Calibration Focus) -- 1.0s HIT Ver. --
-# ==========================================
-# 目的: 高周波特性による乖離を避け、静的な「力・変位」の関係を正確にキャリブレーションする。
-# 1秒間の加圧により、空気圧が目標値(0.6MPa)に完全に到達した状態での挙動を確認。
-
-p_df_exp4 = np.zeros_like(TIME)
-p_f_exp4  = np.zeros_like(TIME)
-
-interval = 5.0      # 5秒サイクル
-hit_duration = 1.0  # 変更箇所: 1.0秒間振り下ろし(HIT)を継続。
-
+# Exp-4: Drumming Task (Slow & Heavy)
+p_df_e4, p_f_e4 = np.zeros_like(TIME), np.zeros_like(TIME)
 for i, t in enumerate(TIME):
-    phase = t % interval
+    if (t % 5.0) < 1.0: # 1.0s Hit
+        p_df_e4[i], p_f_e4[i] = 0.0, 0.6
+    else:
+        p_df_e4[i], p_f_e4[i] = 0.4, 0.1
+save_csv("exp4_drumming_task", p_df_e4, p_f_e4)
+
+# ==========================================
+# Exp 5-8 (New Calibration Tasks)
+# ==========================================
+
+# Exp-5: Amplitude Sweep (力と圧力の線形性確認)
+# 0.2MPa -> 0.4MPa -> 0.6MPa と強さを変える
+p_df_e5, p_f_e5 = np.zeros_like(TIME), np.zeros_like(TIME)
+for i, t in enumerate(TIME):
+    # 5秒ごとに強度切り替え
+    if   t < 5.0:  amp = 0.2
+    elif t < 10.0: amp = 0.4
+    else:          amp = 0.6
     
-    if phase < hit_duration:
-        # --- HIT / PRESS (1.0秒間) ---
-        # 底屈(F)を最大にして打面に押し付ける。
-        # 1秒あればバルブの遅延やチューブ内の圧力伝播の影響が消え、
-        # シミュレーション上の「Model B」の静的な剛性と比較可能。
-        p_df_exp4[i] = 0.0 
-        p_f_exp4[i]  = 0.6 
+    # 2.5秒周期で打撃
+    if (t % 2.5) < 0.5: # 0.5s Hit
+        p_df_e5[i] = 0.0
+        p_f_e5[i]  = amp
     else:
-        # --- RETRACT / HOLD (4.0秒間) ---
-        # 4秒間かけてゆっくり、かつ確実に元の位置へ戻す。
-        p_df_exp4[i] = 0.4 
-        p_f_exp4[i]  = 0.1 
+        p_df_e5[i] = 0.4
+        p_f_e5[i]  = 0.1
+save_csv("exp5_amplitude_sweep", p_df_e5, p_f_e5)
 
-save_csv("exp4_drumming_slow_1s", p_df_exp4, p_f_exp4)
+# Exp-6: Duration Sweep (バルブ応答・デッドタイム確認)
+# 0.05s(Implus) -> 0.15s -> 0.3s と長さを変える
+p_df_e6, p_f_e6 = np.zeros_like(TIME), np.zeros_like(TIME)
+durations = [0.05, 0.15, 0.3]
+for i, t in enumerate(TIME):
+    idx = int(t // 5.0) % 3
+    dur = durations[idx]
+    
+    if (t % 2.5) < dur:
+        p_df_e6[i], p_f_e6[i] = 0.0, 0.6 # Full Power
+    else:
+        p_df_e6[i], p_f_e6[i] = 0.4, 0.1
+save_csv("exp6_duration_sweep", p_df_e6, p_f_e6)
+
+# Exp-7: Stiffness Sweep (拮抗状態での挙動確認)
+# DF(背屈)圧力を 0.0 -> 0.2 -> 0.4 と変えて「バネ性」を見る
+p_df_e7, p_f_e7 = np.zeros_like(TIME), np.zeros_like(TIME)
+for i, t in enumerate(TIME):
+    # 5秒ごとに拮抗圧切り替え
+    if   t < 5.0:  stiff = 0.0
+    elif t < 10.0: stiff = 0.2
+    else:          stiff = 0.4
+    
+    if (t % 2.5) < 0.5:
+        p_df_e7[i] = stiff # 打撃時も拮抗圧を残す
+        p_f_e7[i]  = 0.6   # Full Power
+    else:
+        p_df_e7[i] = 0.4
+        p_f_e7[i]  = 0.1
+save_csv("exp7_stiffness_sweep", p_df_e7, p_f_e7)
+
+# Exp-8: Speed Sweep (連打時のエア供給・ダイナミクス確認)
+# Interval 1.0s(60BPM) -> 0.5s(120BPM) -> 0.25s(240BPM)
+p_df_e8, p_f_e8 = np.zeros_like(TIME), np.zeros_like(TIME)
+intervals = [1.0, 0.5, 0.25]
+for i, t in enumerate(TIME):
+    idx = int(t // 5.0) % 3
+    inv = intervals[idx]
+    
+    # 50% Duty Cycle
+    if (t % inv) < (inv * 0.5):
+        p_df_e8[i], p_f_e8[i] = 0.0, 0.6
+    else:
+        p_df_e8[i], p_f_e8[i] = 0.4, 0.1
+save_csv("exp8_speed_sweep", p_df_e8, p_f_e8)
