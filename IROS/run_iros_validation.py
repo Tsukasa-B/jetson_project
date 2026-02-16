@@ -1,12 +1,6 @@
 """
-Porcaro Robot: IROS 2026 Validation Experiment Runner (No-Drum / Free Motion)
-Target: Jetson Orin Nano + MicroLabBox via UART
-Author: Robo-Dev Partner
-
-python IROS/run_iros_validation.py exp1_static_hysteresis
-python IROS/run_iros_validation.py exp2_step_response
-python IROS/run_iros_validation.py exp3_frequency_sweep
-
+Porcaro Robot: IROS 2026 Validation Experiment Runner (Async: Recv 200Hz / Send 50Hz)
+Target: Jetson Orin Nano + MicroLabBox
 """
 import serial
 import struct
@@ -17,27 +11,33 @@ import threading
 import argparse
 import os
 import sys
+import copy
 
 # ==========================================
 # System Configuration
 # ==========================================
 SERIAL_PORT = "/dev/ttyUSB0"
-BAUD_RATE = 230400       # MLBの上限に合わせる
-CONTROL_DT = 0.02        # 50Hz
+BAUD_RATE = 230400       # 200Hz通信ならこれでOK (500Hzは不可)
+CONTROL_DT = 0.02        # 制御・送信は50Hz
 
-# 通信パケット定義 (MLBの構成に合わせてください)
-# 例: Header(2) + Double(8)*7 = 58 bytes
+# MicroLabBox側の送信周期設定: 0.005s (200Hz) に設定してください
+
 SEND_FMT = '>ddd'        # [Cmd_DF, Cmd_F, Cmd_G]
 RECV_FMT = '>ddddddd'    # [Meas_DF, Meas_F, Meas_G, Angle, Vel, Flag, Force]
 HEADER = b'\xff\xff'
 RECV_PACKET_LEN = 2 + 8 * 7
 
-class SensorInterface(threading.Thread):
+class SensorReceiver(threading.Thread):
+    """
+    受信専用スレッド
+    MicroLabBoxから来る200Hzのデータを全て取りこぼさずにバッファへ格納する
+    """
     def __init__(self, ser):
         super().__init__()
         self.ser = ser
         self.running = True
-        self.latest_data = None
+        self.data_buffer = []  # 受信データを溜めておくリスト
+        self.latest_sample = None # 制御用に使う「最新の1つ」
         self.lock = threading.Lock()
         self.daemon = True
 
@@ -47,57 +47,61 @@ class SensorInterface(threading.Thread):
         
         while self.running:
             try:
-                # バッファにあるデータを全て読み出す
                 if self.ser.in_waiting > 0:
                     buffer += self.ser.read(self.ser.in_waiting)
                     
-                    # パケット単位で処理
                     while len(buffer) >= RECV_PACKET_LEN:
                         # ヘッダ検索
                         idx = buffer.find(HEADER)
                         if idx == -1:
-                            # ヘッダが見つからないなら捨てる（次のデータ待ち）
                             buffer = buffer[-RECV_PACKET_LEN:]
                             break
-                        
                         if idx > 0:
                             buffer = buffer[idx:]
-                            
                         if len(buffer) < RECV_PACKET_LEN:
                             break
 
                         # パケット抽出
                         packet = buffer[:RECV_PACKET_LEN]
-                        buffer = buffer[RECV_PACKET_LEN:] # 使った分を削除
+                        buffer = buffer[RECV_PACKET_LEN:]
 
-                        # 最新データとして解析
-                        self._parse(packet[2:]) # ヘッダ除く
+                        # パースして保存
+                        self._process_packet(packet[2:])
                 else:
-                    time.sleep(0.001)
+                    # 200Hz (5ms) よりも十分速い周期でチェック
+                    time.sleep(0.001) 
 
             except Exception as e:
-                print(f"[Sensor Error] {e}")
+                print(f"[Receiver Error] {e}")
                 self.running = False
 
-    def _parse(self, packet_bytes):
+    def _process_packet(self, packet_bytes):
         try:
             data = struct.unpack(RECV_FMT, packet_bytes)
+            sample = {
+                'timestamp_pc': time.perf_counter(), # PC側着信時刻
+                'meas_pres_DF': data[0],
+                'meas_pres_F':  data[1],
+                'meas_pres_G':  data[2],
+                'angle_deg':    data[3],
+                'velocity':     data[4],
+                'flag':         data[5],
+                'force_N':      data[6]
+            }
+            
             with self.lock:
-                self.latest_data = {
-                    'meas_pres_DF': data[0],
-                    'meas_pres_F':  data[1],
-                    'meas_pres_G':  data[2],
-                    'angle_deg':    data[3],
-                    'velocity':     data[4],
-                    'flag':         data[5],
-                    'force_N':      data[6]  # MLB側でピークホールド処理されている前提
-                }
+                self.data_buffer.append(sample) # ログ用に全部保存
+                self.latest_sample = sample     # 制御用に最新を更新
+
         except:
             pass
 
-    def get_latest(self):
+    def pop_all_buffer(self):
+        """ 溜まっているデータを全て取り出し、バッファを空にする """
         with self.lock:
-            return self.latest_data
+            data = self.data_buffer[:]
+            self.data_buffer = []
+            return data, self.latest_sample
 
     def stop(self):
         self.running = False
@@ -111,7 +115,7 @@ class ExperimentController:
         print(f"[Init] Opening Serial Port {SERIAL_PORT} @ {BAUD_RATE}...")
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
-            self.sensor = SensorInterface(self.ser)
+            self.receiver = SensorReceiver(self.ser)
             self.logs = []
         except serial.SerialException as e:
             print(f"[Error] Serial Port Open Failed: {e}")
@@ -123,13 +127,14 @@ class ExperimentController:
         path = os.path.join(script_dir, "test_signals", name)
         if os.path.exists(path): return path
         if os.path.exists(name): return os.path.abspath(name)
-        print(f"[Error] File not found: {name}"); sys.exit(1)
+        sys.exit(1)
 
     def run(self):
-        self.sensor.start()
-        print(f"\n=== STARTING EXPERIMENT (50Hz Control) ===")
+        self.receiver.start()
+        print(f"\n=== STARTING ASYNC CONTROL ===")
+        print(f"  Receive: ~200Hz (All Logged)")
+        print(f"  Control: 50Hz (Fixed)")
         
-        # 安全開始
         self._send([0,0,0])
         time.sleep(2.0)
         print("GO!")
@@ -139,29 +144,37 @@ class ExperimentController:
         try:
             for idx, row in self.cmd_df.iterrows():
                 loop_start = time.perf_counter()
-                t_elapsed = loop_start - start_time
                 
-                # 1. 指令値送信
+                # 1. 現在の指令値
                 cmd = [row['cmd_pressure_DF'], row['cmd_pressure_F'], row['cmd_pressure_G']]
+                
+                # 2. 送信 (50Hz)
                 self._send(cmd)
                 
-                # 2. センサ値取得 (MLBから送られてきた最新のピークホールド値)
-                sensor_data = self.sensor.get_latest()
+                # 3. データの回収 (前回のループ以降に溜まった200Hzデータを全て取得)
+                #    通常、50Hzループなら 200/50 = 4個程度のデータが返ってくる
+                buffer_data, latest = self.receiver.pop_all_buffer()
                 
-                # 3. ログ保存
-                log = {'time': t_elapsed, 'cmd_DF': cmd[0], 'cmd_F': cmd[1], 'cmd_G': cmd[2]}
-                if sensor_data:
-                    log.update(sensor_data)
+                # 4. ログ保存
+                #    回収した200Hzデータ全てに、現在の指令値を紐づけて保存
+                if buffer_data:
+                    for sample in buffer_data:
+                        log_entry = copy.deepcopy(sample)
+                        log_entry['time'] = sample['timestamp_pc'] - start_time
+                        log_entry['cmd_DF'] = cmd[0] # Zero-Order Holdとして記録
+                        log_entry['cmd_F']  = cmd[1]
+                        log_entry['cmd_G']  = cmd[2]
+                        self.logs.append(log_entry)
                 else:
-                    log.update({k: 0.0 for k in ['meas_pres_DF', 'meas_pres_F', 'meas_pres_G', 'angle_deg', 'velocity', 'flag', 'force_N']})
-                self.logs.append(log)
-                
-                # 4. 周期維持 (50Hz)
+                    # まだデータが来ていない場合（最初期など）
+                    pass
+
+                # 5. 50Hz周期維持
                 while (time.perf_counter() - loop_start) < CONTROL_DT:
                     pass
                     
         except KeyboardInterrupt:
-            print("\nAborted by user.")
+            print("\nAborted.")
         finally:
             self.shutdown()
 
@@ -172,7 +185,7 @@ class ExperimentController:
     def shutdown(self):
         print("Shutting down...")
         self._send([0,0,0])
-        self.sensor.stop()
+        self.receiver.stop()
         self.ser.close()
         self.save_logs()
 
@@ -180,8 +193,14 @@ class ExperimentController:
         if not self.logs: return
         name = f"data_{os.path.splitext(os.path.basename(self.csv_path))[0]}_{int(time.time())}.csv"
         path = os.path.join(os.path.dirname(self.csv_path), name)
-        pd.DataFrame(self.logs).to_csv(path, index=False)
-        print(f"Saved: {path}")
+        
+        # タイムスタンプ順にソート（スレッド競合の微小ズレ補正）
+        df = pd.DataFrame(self.logs)
+        if not df.empty:
+            df = df.sort_values(by='time')
+            
+        df.to_csv(path, index=False)
+        print(f"\n[Saved] High-Res Log (200Hz) saved to:\n  -> {path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

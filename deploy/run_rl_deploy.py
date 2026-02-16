@@ -1,15 +1,13 @@
 """
-Porcaro Robot: Sim-to-Real RL Policy Deployment (Ver.4)
+Porcaro Robot: Sim-to-Real RL Policy Deployment (Ver.5 - AsyncIO)
 Target: Jetson Orin Nano + MicroLabBox
 Feature: 
-  - 複雑なリズムパターン(Rudiments)のリアルタイム生成
-  - 実行時のパターン/BPM指定 (--pattern, --bpm)
-  - 完全な観測空間の再現
+  - Async Communication: Recv @ 200Hz / Control @ 50Hz
+  - Real-time Rudiment Generation with Lookahead
+  - PyTorch Policy Inference
 
-Usage Examples:
-  python run_deploy_v4.py --pattern single_4 --bpm 60
-  python run_deploy_v4.py --pattern double --bpm 120
-  python run_deploy_v4.py --pattern paradiddle --bpm 90
+Usage:
+  python run_deploy_v4.py --pattern single_4 --bpm 100 --port /dev/ttyUSB0
 """
 
 import serial
@@ -21,49 +19,46 @@ import pandas as pd
 import threading
 import os
 import argparse
-import math
+import copy
 
 # ==========================================
-# 0. 引数解析 (Runtime Arguments)
+# 0. 引数解析 & 定数定義
 # ==========================================
 parser = argparse.ArgumentParser(description="Porcaro Real-time Deployment")
 parser.add_argument("--pattern", type=str, default="single_4", 
                     choices=["single_4", "single_8", "double", "paradiddle", "upbeat", "clave", "rest"],
-                    help="Rhythm pattern to generate")
+                    help="Rhythm pattern")
 parser.add_argument("--bpm", type=float, default=60.0, help="Target BPM")
-parser.add_argument("--model", type=str, default="models/policy.pt", help="Path to policy model")
+parser.add_argument("--model", type=str, default="models/policy.pt", help="Path to policy.pt")
 parser.add_argument("--port", type=str, default="/dev/ttyUSB0", help="Serial port")
-parser.add_argument("--verify", action="store_true", help="Run in verification mode (no actuation)")
+parser.add_argument("--verify", action="store_true", help="Verification mode (No actuation)")
 args = parser.parse_args()
 
-# ==========================================
-# ユーザー設定 (Configuration)
-# ==========================================
-MODEL_PATH = args.model
-VERIFY_MODE = args.verify
-USE_FIXED_GRIP = True
-
-# 制御・通信設定
+# System Config
 SERIAL_PORT = args.port
-BAUD_RATE = 230400  # MicroLabBox設定に合わせる
-P_MAX = 0.6         # [MPa]
-CONTROL_DT = 0.02   # 50Hz (学習環境の dt_step に合わせる)
+BAUD_RATE = 230400      # MicroLabBox (200Hz Send) Setting
+CONTROL_DT = 0.02       # 50Hz Control Loop
+P_MAX = 0.6             # Max Pressure [MPa]
 
-# リズム生成設定
+# Rhythm Config
 TARGET_FORCE = 20.0     # [N]
 LOOKAHEAD_TIME = 0.5    # [s]
-LOOKAHEAD_STEPS = int(LOOKAHEAD_TIME / CONTROL_DT) # 25 steps
+LOOKAHEAD_STEPS = 25    # 0.5s / 0.02s
 
-# 通信プロトコル
-SEND_FMT = '>ddd'        # [Cmd_DF, Cmd_F, Cmd_G]
-RECV_FMT = '>ddddddd'    # [P_DF, P_F, P_G, Angle, Vel, Flag, Force]
+# Communication Protocol
+SEND_FMT = '>ddd'       # [Cmd_DF, Cmd_F, Cmd_G]
+RECV_FMT = '>ddddddd'   # [P_DF, P_F, P_G, Angle, Vel, Flag, Force]
 HEADER = b'\xff\xff'
 RECV_PACKET_LEN = 2 + 8 * 7
 
 # ==========================================
-# 1. センサーインターフェース (非同期受信)
+# 1. センサー受信クラス (Async 200Hz)
 # ==========================================
-class SensorInterface(threading.Thread):
+class SensorReceiver(threading.Thread):
+    """
+    MicroLabBoxからの高速データ(200Hz)を取りこぼさず受信し、
+    制御ループ(50Hz)に「最新の1フレーム」を提供する
+    """
     def __init__(self, ser):
         super().__init__()
         self.ser = ser
@@ -73,277 +68,275 @@ class SensorInterface(threading.Thread):
         self.daemon = True
 
     def run(self):
+        self.ser.reset_input_buffer()
         buffer = b''
         while self.running:
             try:
                 if self.ser.in_waiting > 0:
                     buffer += self.ser.read(self.ser.in_waiting)
                     while len(buffer) >= RECV_PACKET_LEN:
-                        if buffer[:2] == HEADER:
-                            data = struct.unpack(RECV_FMT, buffer[2:RECV_PACKET_LEN])
-                            with self.lock:
-                                self.latest_data = data
-                            buffer = buffer[RECV_PACKET_LEN:]
-                        else:
-                            buffer = buffer[1:]
+                        # Header Check
+                        idx = buffer.find(HEADER)
+                        if idx == -1:
+                            buffer = buffer[-RECV_PACKET_LEN:]
+                            break
+                        if idx > 0:
+                            buffer = buffer[idx:]
+                        if len(buffer) < RECV_PACKET_LEN:
+                            break
+
+                        # Extract Packet
+                        packet = buffer[:RECV_PACKET_LEN]
+                        buffer = buffer[RECV_PACKET_LEN:]
+                        self._update(packet[2:]) # Skip Header
                 else:
                     time.sleep(0.001)
             except Exception as e:
-                if self.running: print(f"[Sensor Error] {e}")
+                print(f"[Rx Error] {e}")
                 self.running = False
+
+    def _update(self, packet_bytes):
+        try:
+            data = struct.unpack(RECV_FMT, packet_bytes)
+            with self.lock:
+                # 制御に必要な最新値だけ保持
+                self.latest_data = {
+                    'meas_pres_DF': data[0],
+                    'meas_pres_F':  data[1],
+                    'meas_pres_G':  data[2],
+                    'angle_deg':    data[3],
+                    'velocity':     data[4],
+                    'flag':         data[5],
+                    'force_N':      data[6]
+                }
+        except: pass
 
     def get_latest(self):
         with self.lock:
-            return self.latest_data
+            return copy.deepcopy(self.latest_data)
 
 # ==========================================
-# 2. リアルタイム・ルーディメンツ生成器
+# 2. リアルタイム・リズム生成器
 # ==========================================
 class RealTimeRudimentGenerator:
     """
-    rhythm_generator.py のロジックをNumPyでリアルタイム用に移植したクラス
+    現在時刻に基づき、将来25ステップ分のターゲット軌道を生成する
     """
-    def __init__(self, mode="single_4", bpm=60.0, dt=0.02, horizon_steps=25, target_force=20.0):
-        self.mode = mode
+    def __init__(self, mode, bpm, dt, steps, target_force):
         self.bpm = bpm
         self.dt = dt
-        self.horizon_steps = horizon_steps
+        self.steps = steps
         self.target_force = target_force
-        
-        # --- ルーディメンツ定義 (16分音符グリッド: 0~15) ---
-        # 1小節(4拍) = 16個の16分音符スロット
-        self.rudiments = {
-            "single_4":  [0, 4, 8, 12],            # 4分音符
-            "single_8":  [0, 2, 4, 6, 8, 10, 12, 14], # 8分音符
-            "double":    [0, 1, 4, 5, 8, 9, 12, 13],  # RRLL...
-            "paradiddle":[0, 2, 4, 5, 8, 10, 12, 13], # RLRR LRLL
-            "upbeat":    [2, 6, 10, 14],           # 裏拍
-            "clave":     [0, 3, 6, 8, 10, 12],     # 3-3-2
-            "rest":      []
-        }
-        
-        # 現在のパターンのオフセットリストを取得
-        self.current_offsets = self.rudiments.get(mode, self.rudiments["single_4"])
-        print(f"[Rhythm] Initialized Mode: {mode}, BPM: {bpm}")
-        print(f"[Rhythm] Grid Offsets: {self.current_offsets}")
+        self.sigma = 0.025 # Kernel Width
 
-        # ガウスカーネル設定
-        width_sec = 0.05
-        self.sigma = width_sec / 2.0
+        # パターン定義 (16分音符グリッド 0-15)
+        patterns = {
+            "single_4":   [0, 4, 8, 12],
+            "single_8":   [0, 2, 4, 6, 8, 10, 12, 14],
+            "double":     [0, 1, 4, 5, 8, 9, 12, 13],
+            "paradiddle": [0, 2, 4, 5, 8, 10, 12, 13],
+            "upbeat":     [2, 6, 10, 14],
+            "clave":      [0, 3, 6, 8, 10, 12],
+            "rest":       []
+        }
+        self.grid = patterns.get(mode, patterns["single_4"])
+        
+        # 16分音符1つあたりの秒数
+        self.tick_duration = (60.0 / bpm) / 4.0
+        # 1小節(16ticks)の秒数
+        self.bar_duration = self.tick_duration * 16.0
 
     def get_state(self, t_now):
-        """
-        現在時刻 t_now における位相と、未来のターゲット軌道を計算
-        """
-        # -------------------------------------------------
-        # A. 位相計算 (Phase)
-        # -------------------------------------------------
-        # Sim: phase = time * (bpm/60) * (2pi)
-        # 1拍ごとの位相
-        total_beats = t_now * (self.bpm / 60.0)
-        phase_rad = total_beats * (2 * np.pi)
+        # 1. 位相 (Phase) [0, 2pi] - 4分音符周期のサイン波用
+        # beat_duration = 60 / bpm
+        phase = (t_now * (self.bpm / 60.0) * 2 * np.pi) % (2 * np.pi)
 
-        # -------------------------------------------------
-        # B. ターゲット軌道生成 (Trajectory)
-        # -------------------------------------------------
-        trajectory = np.zeros(self.horizon_steps)
-        future_times = t_now + np.arange(self.horizon_steps) * self.dt
-
-        # 計算範囲内の「小節数(bar_idx)」と「グリッド位置」を特定してスパイクを置く
+        # 2. Lookahead Trajectory (25 steps)
+        traj = np.zeros(self.steps)
         
-        # 1小節(4拍)の時間 [s]
-        bar_duration = 4.0 * (60.0 / self.bpm)
+        # 未来時刻の配列
+        t_futures = t_now + np.arange(self.steps) * self.dt
         
-        # 検索範囲の開始・終了時刻
-        t_start = future_times[0]
-        t_end = future_times[-1]
+        # 各未来時刻が、どの「グリッド(打撃点)」に近いかを計算
+        # 高速化のため、t_futures全体に対してベクトル演算
+        
+        # 現在の小節番号と、次の小節番号までを考慮
+        current_bar_idx = int(t_now / self.bar_duration)
+        
+        # 検索するスパイクの絶対時刻リストを作成
+        candidate_spikes = []
+        for b in [current_bar_idx, current_bar_idx + 1]:
+            base_t = b * self.bar_duration
+            for g in self.grid:
+                candidate_spikes.append(base_t + g * self.tick_duration)
+        
+        candidate_spikes = np.array(candidate_spikes)
 
-        # 検索対象となる小節インデックスの範囲
-        bar_idx_start = int(t_start / bar_duration)
-        bar_idx_end = int(t_end / bar_duration) + 1
-
-        # 16分音符1個あたりの時間 [s]
-        grid_duration = (60.0 / self.bpm) / 4.0
-
-        for b_idx in range(bar_idx_start, bar_idx_end + 1):
-            # この小節の開始時刻
-            bar_start_time = b_idx * bar_duration
+        # 各未来ステップについて、最も近いスパイクの影響を計算
+        if len(candidate_spikes) > 0:
+            # (Steps, 1) - (1, Spikes) = (Steps, Spikes)
+            diffs = t_futures[:, None] - candidate_spikes[None, :]
             
-            # パターン内の有効なグリッド(打撃位置)についてループ
-            for grid_offset in self.current_offsets:
-                # 打撃予定時刻
-                t_spike = bar_start_time + grid_offset * grid_duration
-                
-                # 未来の時刻配列との差分
-                dt_vec = future_times - t_spike
-                
-                # カーネルの範囲内(±0.1s)にある点だけ計算
-                mask = np.abs(dt_vec) < 0.1
-                if np.any(mask):
-                    val = self.target_force * np.exp(-0.5 * (dt_vec[mask] / self.sigma) ** 2)
-                    # 重ね合わせ (MaxをとるかAddするか。SimはConv1dなのでAddに近いが、スパイクが離れていればMaxでも同じ)
-                    # Simの実装(Conv1d)は加算(Add)的な挙動。
-                    # しかし重なりが少ない前提なら np.maximum の方が波形が崩れにくい。ここではMaximum採用。
-                    trajectory[mask] = np.maximum(trajectory[mask], val)
+            # ガウスカーネル: exp(-0.5 * (d/sigma)^2)
+            # 近いものだけ計算 (マスク処理)
+            mask = np.abs(diffs) < (self.sigma * 4)
+            weights = np.zeros_like(diffs)
+            weights[mask] = np.exp(-0.5 * (diffs[mask] / self.sigma)**2)
+            
+            # 各ステップごとに最大の重みを採用 (Max Pooling的な合成)
+            traj = np.max(weights, axis=1) * self.target_force
 
-        return phase_rad, trajectory / self.target_force
-
+        return phase, traj
 
 # ==========================================
 # 3. メイン制御クラス
 # ==========================================
 class RLDeployer:
     def __init__(self):
-        # A. モデルロード
+        # Device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[Init] Device: {self.device}")
-        
-        if not VERIFY_MODE:
-            if not os.path.exists(MODEL_PATH):
-                print(f"[Error] Model file not found: {MODEL_PATH}")
-                exit(1)
-            try:
-                self.policy = torch.jit.load(MODEL_PATH, map_location=self.device)
-                self.policy.eval()
-                self.policy.to(self.device).float()
-                print(f"[Init] Policy loaded: {MODEL_PATH}")
-            except Exception as e:
-                print(f"[Error] Failed to load model. {e}")
-                exit(1)
-        
-        # B. 通信接続
+
+        # Model Load
+        if not args.verify:
+            if not os.path.exists(args.model):
+                raise FileNotFoundError(f"Model not found: {args.model}")
+            self.policy = torch.jit.load(args.model, map_location=self.device)
+            self.policy.eval()
+            print(f"[Init] Policy Loaded: {args.model}")
+
+        # Serial
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
-            self.sensor = SensorInterface(self.ser)
-            self.sensor.start()
-            print(f"[Init] Serial connected: {SERIAL_PORT}")
+            self.receiver = SensorReceiver(self.ser)
+            self.receiver.start()
+            print(f"[Init] Serial Opened: {SERIAL_PORT} @ {BAUD_RATE}")
         except Exception as e:
-            print(f"[Error] Serial connection failed: {e}")
+            print(f"[Error] Serial Failed: {e}")
             exit(1)
 
-        # C. リズム生成器 (引数で指定されたパターンを使用)
-        self.rhythm_gen = RealTimeRudimentGenerator(
-            mode=args.pattern, 
-            bpm=args.bpm, 
-            dt=CONTROL_DT, 
-            horizon_steps=LOOKAHEAD_STEPS,
-            target_force=TARGET_FORCE
+        # Rhythm
+        self.rhythm = RealTimeRudimentGenerator(
+            args.pattern, args.bpm, CONTROL_DT, LOOKAHEAD_STEPS, TARGET_FORCE
         )
 
-        self.last_actions = np.zeros(3, dtype=np.float32) # [DF, F, G]
-        self.start_time = None
         self.logs = []
+        self.last_actions = np.zeros(3) # [DF, F, G]
+        self.start_time = None
 
     def run(self):
-        print("\n" + "="*60)
-        print(f"  Porcaro Deployment (Ver.4)")
-        print(f"  - Pattern: {args.pattern}")
-        print(f"  - BPM:     {args.bpm}")
-        print(f"  - Verify:  {VERIFY_MODE}")
-        print(f"  - Port:    {SERIAL_PORT}")
-        print("="*60 + "\n")
+        print("\n=== PORCARO DEPLOYMENT START ===")
+        print(f" Pattern: {args.pattern} | BPM: {args.bpm}")
+        print(f" Control: 50Hz | Recv: Async")
         
-        input("Press Enter to START control...")
+        # 安全初期化
+        self._send_pressure(0, 0, 0)
+        time.sleep(2.0)
+        input(">>> Press ENTER to Start... ")
+        
         self.start_time = time.perf_counter()
-
+        
         try:
             while True:
                 loop_start = time.perf_counter()
                 t_elapsed = loop_start - self.start_time
 
-                # 1. センサーデータ取得
-                raw_data = self.sensor.get_latest()
-                if raw_data is None:
-                    continue 
-                
-                # raw_data: [P_DF, P_F, P_G, Angle, Vel, Flag, Force]
-                raw_angle_deg = raw_data[3]
-                raw_vel_deg = raw_data[4]
+                # 1. 最新データ取得
+                sensor = self.receiver.get_latest()
+                if sensor is None:
+                    # データがまだ来てないときは待つ
+                    time.sleep(0.001)
+                    continue
 
-                # 2. 座標系 & 単位変換 (Sim環境に合わせる: rad, Up=Positive)
-                obs_wrist_pos = np.radians(raw_angle_deg)
-                obs_wrist_vel = np.radians(raw_vel_deg)
-
-                if USE_FIXED_GRIP:
-                    obs_grip_pos = 0.0 
-                    obs_grip_vel = 0.0
+                # 2. 観測ベクトル構築 (Dim=35)
+                # [Joint(4), Action(3), Phase(2), BPM(1), Traj(25)]
                 
-                # 3. リズム・位相観測 (ここで選択したパターンの波形が出る)
-                phase_rad, rhythm_buf = self.rhythm_gen.get_state(t_elapsed)
-                
-                sin_phase = np.sin(phase_rad)
-                cos_phase = np.cos(phase_rad)
-                
-                # Tensor化
-                q = torch.tensor([obs_wrist_pos, obs_grip_pos], device=self.device)
-                qd = torch.tensor([obs_wrist_vel, obs_grip_vel], device=self.device)
-                prev_actions = torch.tensor(self.last_actions, device=self.device)
-                phase_feats = torch.tensor([sin_phase, cos_phase], device=self.device)
-                bpm_feat = torch.tensor([self.rhythm_gen.bpm / 180.0], device=self.device)
-                rhythm_feat = torch.tensor(rhythm_buf, dtype=torch.float32, device=self.device)
+                # Joint: [WristPos, WristVel, GripPos, GripVel]
+                # Simはrad単位。Realはdegで来るので変換。
+                # Gripは固定(0.5MPa)なので、角度・速度は0と仮定するか、センサあれば入れる
+                q_wrist = np.radians(sensor['angle_deg'])
+                qd_wrist = np.radians(sensor['velocity'])
+                obs_joint = torch.tensor([q_wrist, qd_wrist, 0.0, 0.0], device=self.device)
 
-                # 4. Observation 結合
-                obs_tensor = torch.cat([
-                    q, qd, prev_actions, phase_feats, bpm_feat, rhythm_feat
-                ]).unsqueeze(0).to(self.device).float()
+                # Prev Action
+                obs_action = torch.tensor(self.last_actions, device=self.device)
 
-                # 5. 推論 & 制御
-                if VERIFY_MODE:
-                    # 検証モード: ターゲット波形のみ表示
-                    tgt_val = rhythm_buf[0] * TARGET_FORCE
-                    # 簡易バー表示
-                    bar_len = int(tgt_val)
-                    bar_str = "#" * bar_len
-                    print(f"\r[Verify] Tgt: {tgt_val:5.1f}N | {bar_str:20s} | Ang: {raw_angle_deg:5.1f}", end="")
-                    
-                    pressures = [0.0, 0.0, 0.0]
+                # Rhythm State
+                phase, traj = self.rhythm.get_state(t_elapsed)
+                obs_phase = torch.tensor([np.sin(phase), np.cos(phase)], device=self.device)
+                obs_bpm = torch.tensor([args.bpm / 180.0], device=self.device) # Normalize
+                obs_traj = torch.tensor(traj / TARGET_FORCE, device=self.device) # Normalize
+
+                # Concatenate
+                obs = torch.cat([obs_joint, obs_joint, obs_action, obs_phase, obs_bpm, obs_traj])
+                # Note: obs_jointを2回繰り返しているのは q, qd の代わりか？ 
+                # -> いえ、q(2) + qd(2) です。上で obs_joint にまとめてしまったので修正します。
+                
+                # 正しい構成: q(2), qd(2), a(3), phase(2), bpm(1), traj(25) = 35
+                q_vec = torch.tensor([q_wrist, 0.0], device=self.device)
+                qd_vec = torch.tensor([qd_wrist, 0.0], device=self.device)
+                
+                obs = torch.cat([q_vec, qd_vec, obs_action, obs_phase, obs_bpm, obs_traj])
+                obs = obs.unsqueeze(0).float() # Add Batch Dim
+
+                # 3. 推論 & 送信
+                if args.verify:
+                    # Verifyモード: ターゲット波形を表示するだけ
+                    bar = "#" * int(traj[0])
+                    print(f"\r[Verify] F:{sensor['force_N']:5.1f} | Tgt:{traj[0]:5.1f} {bar:10s}", end="")
+                    cmd_pres = [0.0, 0.0, 0.0]
                 else:
-                    # 制御モード
                     with torch.no_grad():
-                        actions = self.policy(obs_tensor).cpu().numpy().flatten()
-
-                    self.last_actions = np.clip(actions, -1.0, 1.0)
-                    pressures = (self.last_actions + 1.0) / 2.0 * P_MAX
+                        action = self.policy(obs).cpu().numpy().flatten()
                     
-                    packet = HEADER + struct.pack(SEND_FMT, *pressures)
-                    self.ser.write(packet)
-                    self.ser.flush()
+                    self.last_actions = np.clip(action, -1.0, 1.0)
+                    # Sim Action (-1~1) -> Real Pressure (0~0.6MPa)
+                    # Grip(Index 2) は固定0.5MPaに上書き (安全のため)
+                    p_df = (self.last_actions[0] + 1) / 2 * P_MAX
+                    p_f  = (self.last_actions[1] + 1) / 2 * P_MAX
+                    p_g  = 0.5 
+                    
+                    cmd_pres = [p_df, p_f, p_g]
+                    self._send_pressure(*cmd_pres)
 
-                # 6. ログ記録
+                # 4. ログ
                 self.logs.append({
                     'time': t_elapsed,
-                    'pattern': args.pattern,
-                    'bpm': args.bpm,
-                    'obs_wrist': obs_wrist_pos,
-                    'cmd_DF': self.last_actions[0],
-                    'real_P_DF': pressures[0],
-                    'target_val': rhythm_buf[0] * TARGET_FORCE
+                    'angle': sensor['angle_deg'],
+                    'force': sensor['force_N'],
+                    'target': traj[0],
+                    'cmd_DF': cmd_pres[0],
+                    'cmd_F': cmd_pres[1]
                 })
 
-                # 7. 周期維持 (50Hz)
-                dt = time.perf_counter() - loop_start
-                if dt < CONTROL_DT:
-                    time.sleep(CONTROL_DT - dt)
+                # 5. 50Hz Wait
+                while (time.perf_counter() - loop_start) < CONTROL_DT:
+                    pass
 
         except KeyboardInterrupt:
-            print("\n[Stop] Stopping control...")
+            print("\n[Stop] Stopping...")
         finally:
-            self.shutdown()
+            self._shutdown()
 
-    def shutdown(self):
-        if hasattr(self, 'ser') and self.ser.is_open:
-            print("Sending Zero Pressure...")
-            for _ in range(5):
-                self.ser.write(HEADER + struct.pack(SEND_FMT, 0, 0, 0))
-                time.sleep(0.01)
-            self.ser.close()
+    def _send_pressure(self, df, f, g):
+        # Safety Clip
+        df = max(0.0, min(0.6, df))
+        f  = max(0.0, min(0.6, f))
+        g  = max(0.0, min(0.6, g))
+        packet = HEADER + struct.pack(SEND_FMT, df, f, g)
+        self.ser.write(packet)
+
+    def _shutdown(self):
+        self._send_pressure(0, 0, 0)
+        self.receiver.running = False
+        self.ser.close()
         
+        # Save Log
         if self.logs:
             df = pd.DataFrame(self.logs)
-            os.makedirs("data_logs", exist_ok=True)
-            fname = f"data_logs/deploy_log_{args.pattern}_{int(time.time())}.csv"
-            df.to_csv(fname, index=False)
-            print(f"[Log] Saved: {fname}")
+            name = f"deploy_{args.pattern}_{int(time.time())}.csv"
+            df.to_csv(name, index=False)
+            print(f"[Log] Saved to {name}")
 
 if __name__ == "__main__":
     deployer = RLDeployer()
