@@ -7,6 +7,9 @@ Feature:
   - PyTorch Policy Inference
 
 Usage:
+  python run_rl_deploy_midi.py --midi songs/drum_pattern.mid --bpm 120
+  python run_rl_deploy_midi.py --midi songs/pattern.mid --model models/best_policy_v2.pt
+<<<<<<< HEAD
   python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
   python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
   python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
@@ -58,7 +61,7 @@ HEADER = b'\xff\xff'
 RECV_PACKET_LEN = 2 + 8 * 7
 
 # ==========================================
-# 1. センサー受信クラス
+# 1. センサー受信クラス (変更なしのため省略せずにそのまま使用)
 # ==========================================
 class SensorReceiver(threading.Thread):
     def __init__(self, ser):
@@ -179,13 +182,14 @@ class MidiDeployer:
             print(f"[Error] Serial Failed: {e}")
             exit(1)
 
+        # ★ 修正: 外部のPyTorch版に合わせて引数を変更
         self.rhythm_gen = MidiRhythmGenerator(
             midi_path=args.midi, 
-            device=self.device,      
+            device=self.device,      # デバイスを渡す
             dt=CONTROL_DT, 
             target_force=args.force_scale, 
             lookahead_steps=LOOKAHEAD_STEPS,
-            override_bpm=args.bpm  
+            override_bpm=args.bpm  # 追加した引数
         )
 
         self.cmd_logs = []
@@ -194,11 +198,6 @@ class MidiDeployer:
 
         self.prev_q_wrist = None
         self.prev_q_grip = None
-        
-        # 変更箇所1: RNNのHidden States（隠れ状態）を保存・初期化するための変数を追加
-        # rsl_rl_ppo_cfg.pyで設定した rnn_hidden_dim=128 に合わせる
-        self.rnn_states = None
-        self.rnn_hidden_dim = 128
 
     def run(self):
         print("\n=== MIDI DEPLOYMENT START ===")
@@ -228,13 +227,14 @@ class MidiDeployer:
 
                 q_wrist = np.radians(sensor['wrist_angle_deg'])
                 q_grip  = np.radians(sensor['grip_angle_deg'])
-                
+                # 2. ★ 速度の安定計算 (50Hzの安定したループ周期 dt=0.02 で割る)
                 if self.prev_q_wrist is None:
                     qd_wrist = 0.0
                     qd_grip  = 0.0
                 else:
                     raw_qd_wrist = (q_wrist - self.prev_q_wrist) / CONTROL_DT
                     raw_qd_grip  = (q_grip - self.prev_q_grip) / CONTROL_DT
+                    # ±20.0 rad/s 程度（約1140度/秒）にクリップしてノイズスパイクを除去
                     qd_wrist = np.clip(raw_qd_wrist, -20.0, 20.0)
                     qd_grip  = np.clip(raw_qd_grip, -20.0, 20.0)
 
@@ -245,17 +245,19 @@ class MidiDeployer:
                 qd_vec = torch.tensor([qd_wrist, qd_grip], device=self.device)
                 obs_action = torch.tensor(self.last_actions, device=self.device)
                 
+                # ★ 修正: traj はすでにTensorであり、0~1に正規化されている
                 phase, traj = self.rhythm_gen.get_state(t_math)
                 
                 obs_phase = torch.tensor([np.sin(phase), np.cos(phase)], device=self.device)
                 obs_bpm = torch.tensor([self.rhythm_gen.bpm / 180.0], device=self.device)
-                obs_traj = traj  
+                obs_traj = traj  # 二重で割らない！
 
                 obs = torch.cat([q_vec, qd_vec, obs_action, obs_phase, obs_bpm, obs_traj])
                 obs = obs.unsqueeze(0).float()
 
                 # 3. 推論 & 送信
                 if args.verify:
+                    # Verify表示用に実数値(ニュートン)に戻してバーを描画
                     tgt_force_val = traj[0].item() * args.force_scale
                     bar = "#" * int(tgt_force_val)
                     print(f"\r[Verify] t:{t_math:4.2f} | F:{sensor['force_N']:5.1f} | Tgt:{tgt_force_val:5.1f} {bar:10s}", end="")
@@ -263,24 +265,7 @@ class MidiDeployer:
                     action = np.zeros(3)
                 else:
                     with torch.no_grad():
-                        # 変更箇所2: 初回ループ時にRNNの隠れ状態(ゼロテンソル)を生成
-                        # 理由: LSTMの場合、(num_layers, batch_size, hidden_size) のテンソルが2つ(h, c)必要になるため
-                        if self.rnn_states is None:
-                            h0 = torch.zeros(1, 1, self.rnn_hidden_dim, device=self.device)
-                            c0 = torch.zeros(1, 1, self.rnn_hidden_dim, device=self.device)
-                            self.rnn_states = (h0, c0)
-
-                        # 変更箇所3: モデルの推論に obs と rnn_states の両方を渡し、更新された状態を受け取る
-                        # 理由: 次のステップでこの情報を使って過去の履歴（遅れや文脈）を加味させるため
-                        out = self.policy(obs, self.rnn_states)
-                        
-                        # 互換性担保: MLPモデル等の場合はタプルで返ってこないため分岐処理
-                        if isinstance(out, tuple):
-                            action_tensor, self.rnn_states = out
-                        else:
-                            action_tensor = out
-                            
-                        action = action_tensor.cpu().numpy().flatten()
+                        action = self.policy(obs).cpu().numpy().flatten()
                     
                     self.last_actions = np.clip(action, -1.0, 1.0)
                     p_df = (self.last_actions[0] + 1) / 2 * P_MAX
@@ -293,7 +278,7 @@ class MidiDeployer:
                 # 4. 指令値ログの保存
                 self.cmd_logs.append({
                     'cmd_time': t_math,
-                    'target_force': traj[0].item() * args.force_scale, 
+                    'target_force': traj[0].item() * args.force_scale, # ★ ログには実数値で保存
                     'action_DF': action[0],
                     'action_F':  action[1],
                     'action_G':  action[2],
