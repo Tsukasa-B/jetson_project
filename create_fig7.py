@@ -15,7 +15,7 @@ plt.rcParams['axes.linewidth'] = 1.0
 TASKS = [
     {"label": "single4\n(60)", "key": "test_single4_bpm60"},
     {"label": "single8\n(120)", "key": "test_single8_bpm120"},
-    {"label": "double\n(120)", "key": "test_double_bpm120"}
+    {"label": "gmd\n(105)", "key": "gmd_02_mid_bpm105[*]"}
 ]
 
 FORCE_THRESHOLD = 1.0 

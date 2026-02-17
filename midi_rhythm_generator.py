@@ -10,7 +10,7 @@ class MidiRhythmGenerator:
     MIDIファイルを読み込み、強化学習エージェント用のターゲット軌道を生成するクラス。
     学習環境(rhythm_generator.py)と完全に等価な信号処理を行います。
     """
-    def __init__(self, midi_path, device, dt=0.02, target_force=20.0, lookahead_steps=25, override_bpm=None):
+    def __init__(self, midi_path, device, dt=0.02, target_force=20.0, lookahead_steps=50, override_bpm=None):
         self.device = device
         self.dt = dt
         self.target_force = target_force
