@@ -2,13 +2,14 @@
 Porcaro Robot: Sim-to-Real RL Policy Deployment (MIDI Version)
 Target: Jetson Orin Nano + MicroLabBox
 Feature: 
-  - Async Communication: Recv @ 200Hz / Control @ 50Hz
-  - MIDI Parsing & Lookahead Trajectory Generation
+  - Async Communication: Recv @ 200Hz / Control @ 50Hz (Absolute Timing Sync)
+  - Time Reconstruction for High-Res Logging
   - PyTorch Policy Inference
 
 Usage:
-  python run_deploy_midi.py --midi songs/drum_pattern.mid --bpm 120
-  python run_deploy_midi.py --midi songs/pattern.mid --model models/best_policy_v2.pt
+  python run_rl_deploy_midi.py --midi songs/drum_pattern.mid --bpm 120
+  python run_rl_deploy_midi.py --midi songs/pattern.mid --model models/best_policy_v2.pt
+  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_2999_02-17.pt
 """
 
 import serial
@@ -54,15 +55,13 @@ RECV_PACKET_LEN = 2 + 8 * 7
 # 1. センサー受信クラス (Async 200Hz)
 # ==========================================
 class SensorReceiver(threading.Thread):
-    """
-    MicroLabBoxからの高速データ(200Hz)を取りこぼさず受信し、
-    制御ループ(50Hz)に「最新の1フレーム」を提供する
-    """
     def __init__(self, ser):
         super().__init__()
         self.ser = ser
         self.running = True
         self.latest_data = None
+        self.sensor_logs = []
+        self.clear_flag = False
         self.lock = threading.Lock()
         self.daemon = True
 
@@ -74,20 +73,18 @@ class SensorReceiver(threading.Thread):
                 if self.ser.in_waiting > 0:
                     buffer += self.ser.read(self.ser.in_waiting)
                     while len(buffer) >= RECV_PACKET_LEN:
-                        # Header Check
                         idx = buffer.find(HEADER)
                         if idx == -1:
-                            buffer = buffer[-RECV_PACKET_LEN:]
+                            buffer = buffer[-1:]
                             break
                         if idx > 0:
                             buffer = buffer[idx:]
                         if len(buffer) < RECV_PACKET_LEN:
                             break
 
-                        # Extract Packet
                         packet = buffer[:RECV_PACKET_LEN]
                         buffer = buffer[RECV_PACKET_LEN:]
-                        self._update(packet[2:]) # Skip Header
+                        self._update(packet[2:])
                 else:
                     time.sleep(0.001)
             except Exception as e:
@@ -97,36 +94,48 @@ class SensorReceiver(threading.Thread):
     def _update(self, packet_bytes):
         try:
             data = struct.unpack(RECV_FMT, packet_bytes)
+            sample = {
+                'meas_pres_DF': data[0],
+                'meas_pres_F':  data[1],
+                'meas_pres_G':  data[2],
+                'angle_deg':    data[3],
+                'velocity':     data[4],
+                'flag':         data[5],
+                'force_N':      data[6]
+            }
             with self.lock:
-                self.latest_data = {
-                    'meas_pres_DF': data[0],
-                    'meas_pres_F':  data[1],
-                    'meas_pres_G':  data[2],
-                    'angle_deg':    data[3],
-                    'velocity':     data[4],
-                    'flag':         data[5],
-                    'force_N':      data[6]
-                }
+                if self.clear_flag:
+                    self.sensor_logs = []
+                    self.clear_flag = False
+                self.sensor_logs.append(sample)
+                self.latest_data = sample  # RL推論用に常に最新を保持
         except: pass
+
+    def clear_buffer_for_sync(self):
+        self.ser.reset_input_buffer()
+        with self.lock:
+            self.clear_flag = True
 
     def get_latest(self):
         with self.lock:
-            return copy.deepcopy(self.latest_data)
+            if self.latest_data is None:
+                return None
+            return self.latest_data.copy()
+
+    def get_all_logs(self):
+        with self.lock:
+            return self.sensor_logs[:]
 
 # ==========================================
 # 2. MIDI リズム生成クラス
 # ==========================================
 class MidiRhythmGenerator:
-    """
-    MIDIファイルを読み込み、強化学習エージェント用の状態(Phase, Trajectory)を生成する
-    """
     def __init__(self, midi_path, dt, horizon_steps, target_force, override_bpm=None):
         self.dt = dt
         self.horizon_steps = horizon_steps
         self.target_force = target_force
-        self.sigma = 0.025  # Gaussian Kernel Width
+        self.sigma = 0.025  
         
-        # MIDI Load
         try:
             mid = mido.MidiFile(midi_path)
             print(f"[MIDI] Loaded: {midi_path}")
@@ -134,8 +143,7 @@ class MidiRhythmGenerator:
             print(f"[Error] Failed to load MIDI: {e}")
             exit(1)
 
-        # BPM解析
-        self.bpm = 120.0 # Default
+        self.bpm = 120.0 
         for msg in mid:
             if msg.type == 'set_tempo':
                 self.bpm = mido.tempo2bpm(msg.tempo)
@@ -145,11 +153,7 @@ class MidiRhythmGenerator:
             print(f"[MIDI] Overriding BPM: {self.bpm:.1f} -> {override_bpm:.1f}")
             self.bpm = override_bpm
 
-        # Note On イベントの抽出 (絶対時刻 [s] に変換)
         self.spikes = []
-        current_time = 0.0
-        
-        # midoのTick変換係数
         ticks_per_beat = mid.ticks_per_beat
         sec_per_tick = (60.0 / self.bpm) / ticks_per_beat
 
@@ -165,31 +169,21 @@ class MidiRhythmGenerator:
         print(f"[MIDI] Total Notes: {len(self.spikes)} | Duration: {self.duration_sec:.1f}s | BPM: {self.bpm:.1f}")
 
     def get_state(self, t_now):
-        # 1. 位相 (Phase)
-        # MIDI再生における「小節内の位置」ではなく、エージェントの内部クロックとしての位相
         phase = (t_now * (self.bpm / 60.0) * 2 * np.pi) % (2 * np.pi)
-
-        # 2. Lookahead Trajectory
         traj = np.zeros(self.horizon_steps)
         t_futures = t_now + np.arange(self.horizon_steps) * self.dt
         
-        # 検索範囲の絞り込み (高速化)
-        search_radius = 0.5 # [s]
+        search_radius = 0.5 
         idx_start = np.searchsorted(self.spikes, t_now - 0.1)
         idx_end = np.searchsorted(self.spikes, t_now + search_radius + 0.1)
         
         relevant_spikes = self.spikes[idx_start:idx_end]
 
         if len(relevant_spikes) > 0:
-            # (Steps, 1) - (1, Spikes)
             diffs = t_futures[:, None] - relevant_spikes[None, :]
-            
-            # Gaussian Kernel
             mask = np.abs(diffs) < (self.sigma * 4)
             weights = np.zeros_like(diffs)
             weights[mask] = np.exp(-0.5 * (diffs[mask] / self.sigma)**2)
-            
-            # Max Pooling for overlapping notes
             traj = np.max(weights, axis=1) * self.target_force
 
         return phase, traj
@@ -199,18 +193,15 @@ class MidiRhythmGenerator:
 # ==========================================
 class MidiDeployer:
     def __init__(self):
-        # Device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[Init] Device: {self.device}")
 
-        # Model
         if not args.verify:
             if not os.path.exists(args.model):
                 raise FileNotFoundError(f"Model not found: {args.model}")
             self.policy = torch.jit.load(args.model, map_location=self.device)
             self.policy.eval()
 
-        # Serial
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
             self.receiver = SensorReceiver(self.ser)
@@ -219,96 +210,100 @@ class MidiDeployer:
             print(f"[Error] Serial Failed: {e}")
             exit(1)
 
-        # Rhythm
         self.rhythm_gen = MidiRhythmGenerator(
             args.midi, CONTROL_DT, LOOKAHEAD_STEPS, args.force_scale, args.bpm
         )
 
-        self.logs = []
-        self.last_actions = np.zeros(3) # [DF, F, G]
+        self.cmd_logs = []
+        self.last_actions = np.zeros(3) 
         self.start_time = None
 
     def run(self):
         print("\n=== MIDI DEPLOYMENT START ===")
         print(f" Song: {args.midi}")
-        print(f" Control: 50Hz | Recv: Async")
+        print(f" Control: 50Hz (Absolute Sync) | Recv: Async 200Hz")
         
         self._send_pressure(0, 0, 0)
         time.sleep(2.0)
         input(">>> Press ENTER to Start... ")
         
+        # 変更箇所: 時刻0の厳密な同期
+        self.receiver.clear_buffer_for_sync()
         self.start_time = time.perf_counter()
+        step_idx = 0
         
         try:
             while True:
-                loop_start = time.perf_counter()
-                t_elapsed = loop_start - self.start_time
+                # 変更箇所: 数学的な理想時刻 (t_math) の算出
+                # USBジッタや推論の処理落ちに影響されない完璧なメトロノーム時間
+                t_math = step_idx * CONTROL_DT
 
-                # Song Finish Check
-                if t_elapsed > self.rhythm_gen.duration_sec:
-                    print("Song Finished.")
+                if t_math > self.rhythm_gen.duration_sec:
+                    print("\nSong Finished.")
                     break
 
-                # 1. センサーデータ取得
+                # 1. 最新のセンサーデータ取得 (RL用)
                 sensor = self.receiver.get_latest()
                 if sensor is None:
+                    # まだデータが来ていない場合は微小待機してスキップ
                     time.sleep(0.001)
                     continue
 
                 # 2. 観測ベクトル構築 (Dim=35)
-                # [q_wrist, qd_wrist, grip_pos, grip_vel, prev_act(3), phase(2), bpm(1), traj(25)]
-                
-                # Joint
                 q_wrist = np.radians(sensor['angle_deg'])
                 qd_wrist = np.radians(sensor['velocity'])
-                # Grip is fixed (0.5MPa -> approx pos/vel 0 for observation)
                 q_vec = torch.tensor([q_wrist, 0.0], device=self.device)
                 qd_vec = torch.tensor([qd_wrist, 0.0], device=self.device)
                 
-                # Action & Rhythm
                 obs_action = torch.tensor(self.last_actions, device=self.device)
-                phase, traj = self.rhythm_gen.get_state(t_elapsed)
+                
+                # 変更箇所: t_elapsed(実時間)ではなくt_math(理想時間)でリズム生成
+                # これにより推論遅れなどでBPMがヨレるのを防ぐ
+                phase, traj = self.rhythm_gen.get_state(t_math)
                 
                 obs_phase = torch.tensor([np.sin(phase), np.cos(phase)], device=self.device)
                 obs_bpm = torch.tensor([self.rhythm_gen.bpm / 180.0], device=self.device)
-                obs_traj = torch.tensor(traj / args.force_scale, device=self.device) # Normalize
+                obs_traj = torch.tensor(traj / args.force_scale, device=self.device)
 
-                # Concatenate
                 obs = torch.cat([q_vec, qd_vec, obs_action, obs_phase, obs_bpm, obs_traj])
                 obs = obs.unsqueeze(0).float()
 
                 # 3. 推論 & 送信
                 if args.verify:
                     bar = "#" * int(traj[0])
-                    print(f"\r[Verify] F:{sensor['force_N']:5.1f} | Tgt:{traj[0]:5.1f} {bar:10s}", end="")
+                    print(f"\r[Verify] t:{t_math:4.2f} | F:{sensor['force_N']:5.1f} | Tgt:{traj[0]:5.1f} {bar:10s}", end="")
                     cmd_pres = [0.0, 0.0, 0.0]
+                    action = np.zeros(3)
                 else:
                     with torch.no_grad():
                         action = self.policy(obs).cpu().numpy().flatten()
                     
                     self.last_actions = np.clip(action, -1.0, 1.0)
-                    
-                    # Output scaling: (-1,1) -> (0, P_MAX)
                     p_df = (self.last_actions[0] + 1) / 2 * P_MAX
                     p_f  = (self.last_actions[1] + 1) / 2 * P_MAX
-                    p_g  = 0.5 # Grip Fixed
+                    p_g  = 0.5 
                     
                     cmd_pres = [p_df, p_f, p_g]
                     self._send_pressure(*cmd_pres)
 
-                # 4. ログ
-                self.logs.append({
-                    'time': t_elapsed,
-                    'angle': sensor['angle_deg'],
-                    'force': sensor['force_N'],
-                    'target': traj[0],
+                # 4. 指令値ログの保存
+                self.cmd_logs.append({
+                    'cmd_time': t_math,
+                    'target_force': traj[0],
+                    'action_DF': action[0],
+                    'action_F':  action[1],
                     'cmd_DF': cmd_pres[0],
-                    'cmd_F': cmd_pres[1]
+                    'cmd_F':  cmd_pres[1],
+                    'cmd_G':  cmd_pres[2]
                 })
 
-                # 5. 50Hz Wait
-                while (time.perf_counter() - loop_start) < CONTROL_DT:
-                    pass
+                step_idx += 1
+
+                # 5. 絶対時刻ベースの待機 (Drift防止)
+                # 次のステップの理想開始時刻までスリープする
+                target_next_time = self.start_time + (step_idx * CONTROL_DT)
+                while time.perf_counter() < target_next_time:
+                    time.sleep(0.0005)
 
         except KeyboardInterrupt:
             print("\n[Stop] Stopping...")
@@ -323,12 +318,44 @@ class MidiDeployer:
         self._send_pressure(0, 0, 0)
         self.receiver.running = False
         self.ser.close()
+        self._save_logs()
+
+    def _save_logs(self):
+        sensor_data = self.receiver.get_all_logs()
+        if not sensor_data:
+            print("[Error] No sensor data received for logging.")
+            return
+
+        print("\nReconstructing Timestamps and Merging...")
+        # 1. 200Hzセンサーデータの再構築
+        df_sensor = pd.DataFrame(sensor_data)
+        df_sensor['time'] = np.arange(len(df_sensor)) * 0.005
+
+        # 2. 50Hz指令値・推論データのマージ
+        if self.cmd_logs:
+            df_cmd = pd.DataFrame(self.cmd_logs)
+            df_cmd = df_cmd.rename(columns={'cmd_time': 'time'})
+
+            df_merged = pd.merge_asof(
+                df_sensor,
+                df_cmd,
+                on='time',
+                direction='backward'
+            )
+        else:
+            df_merged = df_sensor
+
+        # ファイル出力
+        model_name = os.path.splitext(os.path.basename(args.model))[0] if not args.verify else "verify"
+        midi_name = os.path.splitext(os.path.basename(args.midi))[0]
+        filename = f"deploy_{midi_name}_{model_name}_{int(time.time())}.csv"
         
-        if self.logs:
-            df = pd.DataFrame(self.logs)
-            name = f"logs_midi_{int(time.time())}.csv"
-            df.to_csv(name, index=False)
-            print(f"[Log] Saved: {name}")
+        # 保存先ディレクトリの作成
+        os.makedirs("deploy_results", exist_ok=True)
+        path = os.path.join("deploy_results", filename)
+        
+        df_merged.to_csv(path, index=False)
+        print(f"[Log] High-Res Reconstructed Log saved to:\n  -> {path}")
 
 if __name__ == "__main__":
     MidiDeployer().run()

@@ -7,7 +7,7 @@ Feature:
   - PyTorch Policy Inference
 
 Usage:
-  python run_deploy_v4.py --pattern single_4 --bpm 100 --port /dev/ttyUSB0
+  python run_deploy.py --pattern single_4 --bpm 100 --port /dev/ttyUSB0
 """
 
 import serial
