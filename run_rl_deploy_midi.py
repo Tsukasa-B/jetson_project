@@ -15,6 +15,10 @@ Usage:
   python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --model models/modelB_DR_2999_02-19.pt
   python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --model models/modelB_DR_2999_02-19.pt
   python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --model models/modelB_DR_2999_02-19.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --model models/modelB_DR_2999_02-19.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --model models/modelB_DR_2999_02-19.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --model models/modelB_DR_2999_02-19.pt
+  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --model models/modelB_DR_2999_02-19.pt
 """
 
 import serial
@@ -38,7 +42,7 @@ parser.add_argument("--bpm", type=float, default=None, help="Override BPM (Optio
 parser.add_argument("--model", type=str, default="models/policy.pt", help="Path to policy.pt")
 parser.add_argument("--port", type=str, default="/dev/ttyUSB0", help="Serial port")
 parser.add_argument("--verify", action="store_true", help="Verification mode (No actuation)")
-parser.add_argument("--force_scale", type=float, default=2.0, help="Target Force [N]")
+parser.add_argument("--force_scale", type=float, default=20.0, help="Target Force [N]")
 args = parser.parse_args()
 
 # System Config
