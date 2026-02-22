@@ -56,7 +56,8 @@ LOOKAHEAD_STEPS = 25    # 0.5s / 0.02s
 
 # Communication Protocol
 SEND_FMT = '>ddd'       # [Cmd_DF, Cmd_F, Cmd_G]
-RECV_FMT = '>ddddddd'   # [P_DF, P_F, P_G, Angle, Vel, Flag, Force]
+# 変更箇所: MicroLabBoxからの7要素を受け取る
+RECV_FMT = '>ddddddd'   # [P_DF, P_F, P_G, wrist_Angle, grip_angle, Flag, Force]
 HEADER = b'\xff\xff'
 RECV_PACKET_LEN = 2 + 8 * 7
 
@@ -73,6 +74,11 @@ class SensorReceiver(threading.Thread):
         self.clear_flag = False
         self.lock = threading.Lock()
         self.daemon = True
+
+        # 変更箇所: 速度計算用のバッファを追加
+        self.prev_time = time.time()
+        self.prev_wrist_angle = 0.0
+        self.prev_grip_angle = 0.0
 
     def run(self):
         self.ser.reset_input_buffer()
@@ -103,14 +109,36 @@ class SensorReceiver(threading.Thread):
     def _update(self, packet_bytes):
         try:
             data = struct.unpack(RECV_FMT, packet_bytes)
+            
+            # 変更箇所: 角度を取り出し、差分から角速度を計算する
+            wrist_angle_deg = data[3]
+            grip_angle_deg  = data[4]
+            
+            current_time = time.time()
+            dt = current_time - self.prev_time
+            
+            if dt > 0:
+                wrist_velocity = (wrist_angle_deg - self.prev_wrist_angle) / dt
+                grip_velocity  = (grip_angle_deg - self.prev_grip_angle) / dt
+            else:
+                wrist_velocity = 0.0
+                grip_velocity  = 0.0
+                
+            # 次回の計算用に保存
+            self.prev_time = current_time
+            self.prev_wrist_angle = wrist_angle_deg
+            self.prev_grip_angle  = grip_angle_deg
+
             sample = {
-                'meas_pres_DF': data[0],
-                'meas_pres_F':  data[1],
-                'meas_pres_G':  data[2],
-                'angle_deg':    data[3],
-                'velocity':     data[4],
-                'flag':         data[5],
-                'force_N':      data[6]
+                'meas_pres_DF':    data[0],
+                'meas_pres_F':     data[1],
+                'meas_pres_G':     data[2],
+                'wrist_angle_deg': wrist_angle_deg,
+                'wrist_velocity':  wrist_velocity,  # 算出した手首速度
+                'grip_angle_deg':  grip_angle_deg,
+                'grip_velocity':   grip_velocity,   # 算出したGrip速度
+                'flag':            data[5],
+                'force_N':         data[6]
             }
             with self.lock:
                 if self.clear_flag:
@@ -136,14 +164,18 @@ class SensorReceiver(threading.Thread):
             return self.sensor_logs[:]
 
 # ==========================================
-# 2. MIDI リズム生成クラス
+# 2. MIDI リズム生成クラス (numpy版)
 # ==========================================
 class MidiRhythmGenerator:
     def __init__(self, midi_path, dt, horizon_steps, target_force, override_bpm=None):
         self.dt = dt
         self.horizon_steps = horizon_steps
         self.target_force = target_force
-        self.sigma = 0.025  
+        
+        # --- 変更箇所: 学習環境と一致させる ---
+        # width_sec = 0.035 に対応する sigma (0.035 / 2.0 = 0.0175)
+        self.sigma = 0.0175 # 0.025 -> 0.0175
+        # --------------------------------------
         
         try:
             mid = mido.MidiFile(midi_path)
@@ -192,7 +224,11 @@ class MidiRhythmGenerator:
             diffs = t_futures[:, None] - relevant_spikes[None, :]
             mask = np.abs(diffs) < (self.sigma * 4)
             weights = np.zeros_like(diffs)
-            weights[mask] = np.exp(-0.5 * (diffs[mask] / self.sigma)**2)
+            
+            # --- 変更箇所: 指数を2乗から4乗(Super-Gaussian)へ変更 ---
+            weights[mask] = np.exp(-0.5 * (diffs[mask] / self.sigma)**4)
+            # ------------------------------------------------------------
+            
             traj = np.max(weights, axis=1) * self.target_force
 
         return phase, traj
@@ -236,15 +272,12 @@ class MidiDeployer:
         time.sleep(2.0)
         input(">>> Press ENTER to Start... ")
         
-        # 変更箇所: 時刻0の厳密な同期
         self.receiver.clear_buffer_for_sync()
         self.start_time = time.perf_counter()
         step_idx = 0
         
         try:
             while True:
-                # 変更箇所: 数学的な理想時刻 (t_math) の算出
-                # USBジッタや推論の処理落ちに影響されない完璧なメトロノーム時間
                 t_math = step_idx * CONTROL_DT
 
                 if t_math > self.rhythm_gen.duration_sec:
@@ -254,20 +287,21 @@ class MidiDeployer:
                 # 1. 最新のセンサーデータ取得 (RL用)
                 sensor = self.receiver.get_latest()
                 if sensor is None:
-                    # まだデータが来ていない場合は微小待機してスキップ
                     time.sleep(0.001)
                     continue
 
                 # 2. 観測ベクトル構築 (Dim=35)
-                q_wrist = np.radians(sensor['angle_deg'])
-                qd_wrist = np.radians(sensor['velocity'])
-                q_vec = torch.tensor([q_wrist, 0.0], device=self.device)
-                qd_vec = torch.tensor([qd_wrist, 0.0], device=self.device)
+                q_wrist = np.radians(sensor['wrist_angle_deg'])
+                qd_wrist = np.radians(sensor['wrist_velocity']) # 変更箇所: 正しいキー名に変更
+                q_grip  = np.radians(sensor['grip_angle_deg'])  # 変更箇所: Grip角度を取得
+                qd_grip = np.radians(sensor['grip_velocity'])   # 変更箇所: Grip速度を取得
+                
+                # 変更箇所: シミュレーション環境と同じく、WristとGrip両方をベクトルに含める
+                q_vec  = torch.tensor([q_wrist, q_grip], device=self.device)
+                qd_vec = torch.tensor([qd_wrist, qd_grip], device=self.device)
                 
                 obs_action = torch.tensor(self.last_actions, device=self.device)
                 
-                # 変更箇所: t_elapsed(実時間)ではなくt_math(理想時間)でリズム生成
-                # これにより推論遅れなどでBPMがヨレるのを防ぐ
                 phase, traj = self.rhythm_gen.get_state(t_math)
                 
                 obs_phase = torch.tensor([np.sin(phase), np.cos(phase)], device=self.device)
@@ -290,6 +324,8 @@ class MidiDeployer:
                     self.last_actions = np.clip(action, -1.0, 1.0)
                     p_df = (self.last_actions[0] + 1) / 2 * P_MAX
                     p_f  = (self.last_actions[1] + 1) / 2 * P_MAX
+                    
+                    # Gripは現在0.5MPaに固定（ポリシーが出力する場合は変更可能）
                     p_g  = 0.5 
                     
                     cmd_pres = [p_df, p_f, p_g]
@@ -301,6 +337,7 @@ class MidiDeployer:
                     'target_force': traj[0],
                     'action_DF': action[0],
                     'action_F':  action[1],
+                    'action_G':  action[2] if len(action) > 2 else 0.0, # 変更箇所: RL出力を記録
                     'cmd_DF': cmd_pres[0],
                     'cmd_F':  cmd_pres[1],
                     'cmd_G':  cmd_pres[2]
@@ -309,7 +346,6 @@ class MidiDeployer:
                 step_idx += 1
 
                 # 5. 絶対時刻ベースの待機 (Drift防止)
-                # 次のステップの理想開始時刻までスリープする
                 target_next_time = self.start_time + (step_idx * CONTROL_DT)
                 while time.perf_counter() < target_next_time:
                     time.sleep(0.0005)
@@ -336,11 +372,9 @@ class MidiDeployer:
             return
 
         print("\nReconstructing Timestamps and Merging...")
-        # 1. 200Hzセンサーデータの再構築
         df_sensor = pd.DataFrame(sensor_data)
         df_sensor['time'] = np.arange(len(df_sensor)) * 0.005
 
-        # 2. 50Hz指令値・推論データのマージ
         if self.cmd_logs:
             df_cmd = pd.DataFrame(self.cmd_logs)
             df_cmd = df_cmd.rename(columns={'cmd_time': 'time'})
@@ -354,12 +388,10 @@ class MidiDeployer:
         else:
             df_merged = df_sensor
 
-        # ファイル出力
         model_name = os.path.splitext(os.path.basename(args.model))[0] if not args.verify else "verify"
         midi_name = os.path.splitext(os.path.basename(args.midi))[0]
         filename = f"deploy_{midi_name}_{model_name}_{int(time.time())}.csv"
         
-        # 保存先ディレクトリの作成
         os.makedirs("deploy_results", exist_ok=True)
         path = os.path.join("deploy_results", filename)
         

@@ -80,8 +80,8 @@ class SensorReceiver(threading.Thread):
                 'meas_pres_DF': data[0],
                 'meas_pres_F':  data[1],
                 'meas_pres_G':  data[2],
-                'angle_deg':    data[3],
-                'velocity':     data[4],
+                'wirst_angle_deg':    data[3],
+                'grip_angle_deg':     data[4],
                 'flag':         data[5],
                 'force_N':      data[6]
             }
