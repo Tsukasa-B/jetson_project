@@ -231,8 +231,11 @@ class MidiDeployer:
                     qd_wrist = 0.0
                     qd_grip  = 0.0
                 else:
-                    qd_wrist = (q_wrist - self.prev_q_wrist) / CONTROL_DT
-                    qd_grip  = (q_grip - self.prev_q_grip) / CONTROL_DT
+                    raw_qd_wrist = (q_wrist - self.prev_q_wrist) / CONTROL_DT
+                    raw_qd_grip  = (q_grip - self.prev_q_grip) / CONTROL_DT
+                    # ±20.0 rad/s 程度（約1140度/秒）にクリップしてノイズスパイクを除去
+                    qd_wrist = np.clip(raw_qd_wrist, -20.0, 20.0)
+                    qd_grip  = np.clip(raw_qd_grip, -20.0, 20.0)
 
                 self.prev_q_wrist = q_wrist
                 self.prev_q_grip = q_grip
