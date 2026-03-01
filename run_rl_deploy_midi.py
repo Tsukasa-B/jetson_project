@@ -1,22 +1,23 @@
 """
-Porcaro Robot: Sim-to-Real RL Policy Deployment (MIDI Version)
+Porcaro Robot: Sim-to-Real RL Policy Deployment (ONNX Version)
 Target: Jetson Orin Nano + MicroLabBox
 Feature: 
   - Async Communication: Recv @ 200Hz / Control @ 50Hz (Absolute Timing Sync)
   - Time Reconstruction for High-Res Logging
-  - PyTorch Policy Inference
+  - ONNX Runtime Inference (Auto-detects RNN vs MLP)
 
 Usage:
-  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm160.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
-  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --model models/modelB_DR_1499_03-1_lookahead5.pt
+  python3 run_rl_deploy_onnx.py --midi songs/test_single4_bpm60.mid --onnx exported/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm160.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --onnx models/modelB.onnx
 """
 
 import serial
@@ -29,17 +30,18 @@ import threading
 import os
 import argparse
 import copy
+import onnxruntime as ort  # ★ ONNX Runtimeを追加
 
-# ★ 追加: 外部のPyTorch版ジェネレータをインポート
+# 外部のPyTorch版ジェネレータをインポート
 from midi_rhythm_generator import MidiRhythmGenerator
 
 # ==========================================
 # 0. 引数解析 & 定数定義
 # ==========================================
-parser = argparse.ArgumentParser(description="Porcaro MIDI Deployment")
+parser = argparse.ArgumentParser(description="Porcaro ONNX Deployment")
 parser.add_argument("--midi", type=str, required=True, help="Path to MIDI file")
 parser.add_argument("--bpm", type=float, default=None, help="Override BPM (Optional)")
-parser.add_argument("--model", type=str, default="models/policy.pt", help="Path to policy.pt")
+parser.add_argument("--onnx", type=str, default="policy.onnx", help="Path to policy.onnx")
 parser.add_argument("--port", type=str, default="/dev/ttyUSB0", help="Serial port")
 parser.add_argument("--verify", action="store_true", help="Verification mode (No actuation)")
 parser.add_argument("--force_scale", type=float, default=20.0, help="Target Force [N]")
@@ -158,18 +160,39 @@ class SensorReceiver(threading.Thread):
 
 
 # ==========================================
-# 3. メイン制御クラス (MIDI Deployer)
+# 3. メイン制御クラス (ONNX Deployer)
 # ==========================================
 class MidiDeployer:
     def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"[Init] Device: {self.device}")
+        # MidiGen用にPyTorchのデバイス設定は残す
+        self.device = torch.device("cpu") 
+        print(f"[Init] Torch Device for MidiGen: {self.device}")
 
+        # ★ ONNXモデルの読み込みと解析
         if not args.verify:
-            if not os.path.exists(args.model):
-                raise FileNotFoundError(f"Model not found: {args.model}")
-            self.policy = torch.jit.load(args.model, map_location=self.device)
-            self.policy.eval()
+            if not os.path.exists(args.onnx):
+                raise FileNotFoundError(f"ONNX Model not found: {args.onnx}")
+            
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            self.ort_session = ort.InferenceSession(args.onnx, providers=providers)
+            
+            self.input_defs = self.ort_session.get_inputs()
+            self.input_names = [inp.name for inp in self.input_defs]
+            print(f"[ONNX] Loaded model inputs: {self.input_names}")
+            
+            # 入力が2つ以上あればRNNと判定
+            self.is_rnn = len(self.input_names) > 1
+            if self.is_rnn:
+                print("[ONNX] Structure: RNN (Hidden states enabled)")
+                shape_h0 = self.input_defs[1].shape
+                # 動的次元(文字列)が含まれる場合は1に置き換え
+                self.rnn_shape = [1 if isinstance(s, str) else s for s in shape_h0] 
+                print(f"[ONNX] Hidden State Shape: {self.rnn_shape}")
+                
+                self.h0 = np.zeros(self.rnn_shape, dtype=np.float32)
+                self.c0 = np.zeros(self.rnn_shape, dtype=np.float32)
+            else:
+                print("[ONNX] Structure: MLP (No hidden states)")
 
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
@@ -194,14 +217,9 @@ class MidiDeployer:
 
         self.prev_q_wrist = None
         self.prev_q_grip = None
-        
-        # 変更箇所1: RNNのHidden States（隠れ状態）を保存・初期化するための変数を追加
-        # rsl_rl_ppo_cfg.pyで設定した rnn_hidden_dim=128 に合わせる
-        self.rnn_states = None
-        self.rnn_hidden_dim = 128
 
     def run(self):
-        print("\n=== MIDI DEPLOYMENT START ===")
+        print("\n=== ONNX DEPLOYMENT START ===")
         print(f" Song: {args.midi}")
         print(f" Control: 50Hz (Absolute Sync) | Recv: Async 200Hz")
         
@@ -241,6 +259,7 @@ class MidiDeployer:
                 self.prev_q_wrist = q_wrist
                 self.prev_q_grip = q_grip
                 
+                # Tensorで組んでからNumpyに変換 (既存のロジックを極力維持)
                 q_vec  = torch.tensor([q_wrist, q_grip], device=self.device)
                 qd_vec = torch.tensor([qd_wrist, qd_grip], device=self.device)
                 obs_action = torch.tensor(self.last_actions, device=self.device)
@@ -251,10 +270,10 @@ class MidiDeployer:
                 obs_bpm = torch.tensor([self.rhythm_gen.bpm / 180.0], device=self.device)
                 obs_traj = traj  
 
-                obs = torch.cat([q_vec, qd_vec, obs_action, obs_phase, obs_bpm, obs_traj])
-                obs = obs.unsqueeze(0).float()
+                obs_tensor = torch.cat([q_vec, qd_vec, obs_action, obs_phase, obs_bpm, obs_traj]).unsqueeze(0).float()
+                obs_np = obs_tensor.numpy() # ONNX用のNumpy配列
 
-                # 3. 推論 & 送信
+                # 3. ONNX 推論
                 if args.verify:
                     tgt_force_val = traj[0].item() * args.force_scale
                     bar = "#" * int(tgt_force_val)
@@ -262,25 +281,23 @@ class MidiDeployer:
                     cmd_pres = [0.0, 0.0, 0.0]
                     action = np.zeros(3)
                 else:
-                    with torch.no_grad():
-                        # 変更箇所2: 初回ループ時にRNNの隠れ状態(ゼロテンソル)を生成
-                        # 理由: LSTMの場合、(num_layers, batch_size, hidden_size) のテンソルが2つ(h, c)必要になるため
-                        if self.rnn_states is None:
-                            h0 = torch.zeros(1, 1, self.rnn_hidden_dim, device=self.device)
-                            c0 = torch.zeros(1, 1, self.rnn_hidden_dim, device=self.device)
-                            self.rnn_states = (h0, c0)
-
-                        # 変更箇所3: モデルの推論に obs と rnn_states の両方を渡し、更新された状態を受け取る
-                        # 理由: 次のステップでこの情報を使って過去の履歴（遅れや文脈）を加味させるため
-                        out = self.policy(obs, self.rnn_states)
-                        
-                        # 互換性担保: MLPモデル等の場合はタプルで返ってこないため分岐処理
-                        if isinstance(out, tuple):
-                            action_tensor, self.rnn_states = out
-                        else:
-                            action_tensor = out
-                            
-                        action = action_tensor.cpu().numpy().flatten()
+                    if self.is_rnn:
+                        # RNNの場合
+                        ort_inputs = {
+                            self.input_names[0]: obs_np,
+                            self.input_names[1]: self.h0,
+                            self.input_names[2]: self.c0
+                        }
+                        ort_outs = self.ort_session.run(None, ort_inputs)
+                        action = ort_outs[0].flatten()
+                        # 隠れ状態の更新
+                        self.h0 = ort_outs[1]
+                        self.c0 = ort_outs[2]
+                    else:
+                        # MLPの場合
+                        ort_inputs = {self.input_names[0]: obs_np}
+                        ort_outs = self.ort_session.run(None, ort_inputs)
+                        action = ort_outs[0].flatten()
                     
                     self.last_actions = np.clip(action, -1.0, 1.0)
                     p_df = (self.last_actions[0] + 1) / 2 * P_MAX
@@ -346,7 +363,8 @@ class MidiDeployer:
         else:
             df_merged = df_sensor
 
-        model_name = os.path.splitext(os.path.basename(args.model))[0] if not args.verify else "verify"
+        # ファイル名に .onnx を反映
+        model_name = os.path.splitext(os.path.basename(args.onnx))[0] if not args.verify else "verify"
         midi_name = os.path.splitext(os.path.basename(args.midi))[0]
         filename = f"deploy_{midi_name}_{model_name}_{int(time.time())}.csv"
         
