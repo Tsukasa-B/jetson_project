@@ -10,14 +10,20 @@ sudo modprobe ftdi_sio
 echo 0584 b050 | sudo tee /sys/bus/usb-serial/drivers/ftdi_sio/new_id
 ```
 
-ros2コンテナ起動プロンプト
-```
+新しいros2コンテナ起動プロンプト（確定版）
+```bash
+# ロボットを接続して起動する場合（FTDIドライバのおまじないを実行した後に実行）
 sudo docker run --runtime nvidia -it --rm --network host \
     --device /dev/ttyUSB0 \
-    -v /ssd/jetson_project:/workspace \
-    -w /workspace \
+    -v /home/okuilab/jetson-containers/data/jetson_project:/data/jetson_project \
+    -w /data/jetson_project \
     my_ros2_pytorch_container:latest bash
-```
+
+# ロボットを接続せずにコード開発のみ行う場合
+sudo docker run --runtime nvidia -it --rm --network host \
+    -v /home/okuilab/jetson-containers/data/jetson_project:/data/jetson_project \
+    -w /data/jetson_project \
+    my_ros2_pytorch_container:latest bash
 
 collect_real_data.py
 目的	コマンド (コピペ用)	収集時間の目安
