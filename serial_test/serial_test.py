@@ -3,7 +3,7 @@ import time
 
 # 設定
 PORT = '/dev/ttyUSB0'
-BAUD = 115200  # MicroLabBox側の速度に合わせて変更してください
+BAUD = 230400  # MicroLabBox側の速度に合わせて変更してください
 
 def main():
     print(f"接続試行中: {PORT}...")

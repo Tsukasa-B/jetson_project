@@ -8,16 +8,16 @@ Feature:
 
 Usage:
   python3 run_rl_deploy_onnx.py --midi songs/test_single4_bpm60.mid --onnx exported/modelB.onnx
-  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --onnx models/modelD.onnx
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --onnx models/modelD.onnx
-  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --onnx models/modelD.onnx
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --onnx models/modelD.onnx
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --onnx models/modelD.onnx
-  python run_rl_deploy_midi.py --midi songs/test_double_bpm160.mid --onnx models/modelD.onnx
-  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --onnx models/modelD.onnx
-  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --onnx models/modelD.onnx
-  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --onnx models/modelD.onnx
-  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --onnx models/modelD.onnx
+  python run_rl_deploy_midi.py --midi songs/test_single4_bpm60.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm120.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_single8_bpm160.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm60.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm120.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/test_double_bpm160.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/gmd_04_extreme_bpm170.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/gmd_03_high_bpm138.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/gmd_02_mid_bpm105.mid --onnx models/modelB.onnx
+  python run_rl_deploy_midi.py --midi songs/gmd_01_low_bpm80.mid --onnx models/modelB.onnx
 """
 
 import serial
@@ -52,7 +52,7 @@ SERIAL_PORT = args.port
 BAUD_RATE = 230400
 CONTROL_DT = 0.02
 P_MAX = 0.6
-LOOKAHEAD_STEPS = 5
+LOOKAHEAD_STEPS = 25
 
 SEND_FMT = '>ddd'
 RECV_FMT = '>ddddddd'
