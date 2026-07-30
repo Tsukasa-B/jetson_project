@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>叩くロボット — リズム演奏デモ</title>
+<style>
+  :root{
+    --bg:#0b0f16; --panel:#141a24; --panel2:#1b2331; --line:#26303f;
+    --fg:#e8eef7; --muted:#8b9bb0;
+    --target:#38bdf8;      /* 目標（譜面・目標力） */
+    --actual:#fbbf24;      /* 実測（力センサ） */
+    --good:#34d399;        /* ±30ms 以内 */
+    --miss:#f87171;
+    --df:#a78bfa; --f:#22d3ee; --g:#f0abfc;   /* 圧力3ch */
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:"Hiragino Sans","Noto Sans JP",system-ui,-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  header{
+    display:flex; align-items:center; gap:16px; padding:14px 22px;
+    border-bottom:1px solid var(--line); background:var(--panel);
+  }
+  header h1{font-size:20px; margin:0; letter-spacing:.02em; font-weight:700}
+  header .sub{color:var(--muted); font-size:13px}
+  .spacer{flex:1}
+  .badge{
+    font-size:12px; font-weight:700; padding:5px 11px; border-radius:999px;
+    border:1px solid var(--line); color:var(--muted); letter-spacing:.06em;
+  }
+  .badge.mock{color:#fbbf24; border-color:#5a4a1c; background:#291f08}
+  .badge.hw{color:#34d399; border-color:#1c4a37; background:#082018}
+
+  main{display:grid; grid-template-columns:300px 1fr; height:calc(100vh - 61px)}
+  aside{
+    background:var(--panel); border-right:1px solid var(--line);
+    padding:18px; overflow-y:auto; display:flex; flex-direction:column; gap:18px;
+  }
+  .lbl{font-size:12px; color:var(--muted); letter-spacing:.08em; font-weight:700; margin-bottom:9px}
+
+  .songs{display:flex; flex-direction:column; gap:8px}
+  .song{
+    text-align:left; cursor:pointer; padding:13px 15px; border-radius:var(--radius);
+    background:var(--panel2); border:2px solid transparent; color:var(--fg);
+    font-size:16px; font-weight:600; transition:.12s; font-family:inherit;
+  }
+  .song:hover{border-color:#33465f}
+  .song.sel{border-color:var(--target); background:#0d2b3d}
+  .song small{display:block; color:var(--muted); font-weight:400; font-size:12px; margin-top:3px}
+
+  .bpmrow{display:flex; align-items:baseline; gap:9px; margin-bottom:6px}
+  .bpmval{font-size:32px; font-weight:800; font-variant-numeric:tabular-nums}
+  .bpmunit{color:var(--muted); font-size:13px}
+  input[type=range]{width:100%; accent-color:var(--target); height:30px}
+  .bpmhint{color:var(--muted); font-size:11.5px; margin-top:2px}
+
+  .btn{
+    width:100%; padding:18px; border-radius:var(--radius); border:none; cursor:pointer;
+    font-size:20px; font-weight:800; font-family:inherit; letter-spacing:.05em; transition:.12s;
+  }
+  .btn.start{background:var(--good); color:#04120c}
+  .btn.start:hover{filter:brightness(1.08)}
+  .btn.start:disabled{background:#2b3543; color:#5d6b7d; cursor:not-allowed}
+  .btn.stop{background:#3a1f22; color:#fca5a5; border:2px solid #7f2c2c; font-size:16px; padding:14px}
+  .btn.stop:hover{background:#4d2429}
+
+  section.stage{display:flex; flex-direction:column; padding:14px 18px 16px; gap:12px; min-width:0}
+  .rollwrap{position:relative; flex:1; min-height:0; background:var(--panel);
+            border:1px solid var(--line); border-radius:var(--radius); overflow:hidden}
+  canvas{display:block; width:100%; height:100%}
+  .overlay{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    flex-direction:column; gap:10px; pointer-events:none;
+  }
+  .bigmsg{font-size:44px; font-weight:800; letter-spacing:.04em;
+          text-shadow:0 4px 24px rgba(0,0,0,.6)}
+  .submsg{color:var(--muted); font-size:15px}
+
+  .strip{display:grid; grid-template-columns:1.25fr 1fr 1fr; gap:12px; height:132px}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+        padding:11px 14px; display:flex; flex-direction:column; min-width:0}
+  .card h3{margin:0 0 9px; font-size:11.5px; color:var(--muted); letter-spacing:.08em; font-weight:700}
+  .bars{display:flex; flex-direction:column; gap:9px; flex:1; justify-content:center}
+  .bar{display:grid; grid-template-columns:34px 1fr 58px; align-items:center; gap:9px; font-size:12px}
+  .bar .nm{color:var(--muted); font-weight:700}
+  .track{height:11px; background:#0b1017; border-radius:6px; position:relative; overflow:hidden}
+  .fill{position:absolute; inset:0 auto 0 0; width:0; border-radius:6px; transition:width .05s linear}
+  .ghost{position:absolute; top:0; bottom:0; width:2px; background:#ffffff88}
+  .val{text-align:right; font-variant-numeric:tabular-nums; color:var(--fg)}
+  .gauges{display:flex; flex-direction:column; gap:12px; flex:1; justify-content:center}
+  .metric{display:flex; align-items:baseline; gap:7px}
+  .metric .k{color:var(--muted); font-size:12px; width:64px}
+  .metric .v{font-size:24px; font-weight:800; font-variant-numeric:tabular-nums}
+  .metric .u{color:var(--muted); font-size:12px}
+  .scorebox{align-items:center; justify-content:center; text-align:center}
+  .bignum{font-size:42px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1}
+  .scorebox .sub{color:var(--muted); font-size:12px; margin-top:5px}
+
+  .legend{display:flex; gap:14px; font-size:11.5px; color:var(--muted); align-items:center}
+  .dot{width:9px; height:9px; border-radius:3px; display:inline-block; margin-right:5px;
+       vertical-align:middle}
+
+  /* 幅の狭い画面（ノートPC・タブレット）では凡例を隠し、パネルを2列に */
+  @media (max-width:1180px){
+    header .sub, .legend{display:none}
+    main{grid-template-columns:250px 1fr}
+    .strip{grid-template-columns:1fr 1fr; height:150px}
+    .strip .card:nth-child(3){grid-column:1 / -1; height:auto}
+  }
+  @media (max-height:720px){
+    .strip{height:112px}
+    .bignum{font-size:32px}
+    .btn{padding:13px; font-size:17px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>叩くロボット</h1>
+  <span class="sub">空気圧人工筋 × 強化学習 — 楽譜どおりに叩けるか</span>
+  <span class="spacer"></span>
+  <span class="legend">
+    <span><i class="dot" style="background:var(--target)"></i>楽譜・目標</span>
+    <span><i class="dot" style="background:var(--actual)"></i>実際に出た力</span>
+    <span><i class="dot" style="background:var(--good)"></i>±30ms 成功</span>
+  </span>
+  <span id="badge" class="badge">接続中…</span>
+</header>
+
+<main>
+  <aside>
+    <div>
+      <div class="lbl">きょくを えらぶ</div>
+      <div class="songs" id="songs"></div>
+    </div>
+
+    <div>
+      <div class="lbl">テンポ</div>
+      <div class="bpmrow"><span class="bpmval" id="bpmval">120</span><span class="bpmunit">BPM</span></div>
+      <input type="range" id="bpm" min="60" max="180" step="1" value="120" />
+      <div class="bpmhint" id="bpmhint">楽譜どおり</div>
+    </div>
+
+    <button class="btn start" id="start" disabled>▶ スタート</button>
+    <button class="btn stop" id="stop">■ ストップ（緊急停止）</button>
+
+    <div style="color:var(--muted); font-size:11px; line-height:1.7">
+      <div id="infoline">—</div>
+    </div>
+  </aside>
+
+  <section class="stage">
+    <div class="rollwrap">
+      <canvas id="roll"></canvas>
+      <div class="overlay" id="overlay">
+        <div class="bigmsg">きょくを えらんで スタート</div>
+        <div class="submsg">ロボットが楽譜どおりのタイミングで叩けるか見てみよう</div>
+      </div>
+    </div>
+
+    <div class="strip">
+      <div class="card">
+        <h3>空気圧シリンダ 指令 / 実測 [MPa]</h3>
+        <div class="bars">
+          <div class="bar"><span class="nm" style="color:var(--df)">DF</span>
+            <span class="track"><i class="fill" id="f0" style="background:var(--df)"></i><i class="ghost" id="g0"></i></span>
+            <span class="val" id="v0">0.000</span></div>
+          <div class="bar"><span class="nm" style="color:var(--f)">F</span>
+            <span class="track"><i class="fill" id="f1" style="background:var(--f)"></i><i class="ghost" id="g1"></i></span>
+            <span class="val" id="v1">0.000</span></div>
+          <div class="bar"><span class="nm" style="color:var(--g)">G</span>
+            <span class="track"><i class="fill" id="f2" style="background:var(--g)"></i><i class="ghost" id="g2"></i></span>
+            <span class="val" id="v2">0.000</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>関節角</h3>
+        <div class="gauges">
+          <div class="metric"><span class="k">手首</span><span class="v" id="wrist">0.0</span><span class="u">deg</span></div>
+          <div class="metric"><span class="k">グリップ</span><span class="v" id="grip">0.0</span><span class="u">deg</span></div>
+          <div class="metric"><span class="k">力センサ</span><span class="v" id="force" style="color:var(--actual)">0.0</span><span class="u">N</span></div>
+        </div>
+      </div>
+
+      <div class="card scorebox">
+        <h3>タイミング成績</h3>
+        <div class="bignum" id="pct">—</div>
+        <div class="sub" id="scoresub">±30ms いないの わりあい</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+const S = {
+  songs: [], sel: null, bpm: 120, nominalBpm: 120,
+  score: null,            // {notes:[{t,p,v,d}], duration, lanes}
+  samples: [], hits: [],
+  state: "idle", info: {}, hw: false, drive: true, runId: null,
+  lastT: 0, lastWall: 0, playT: 0,
+  maxTarget: 1,
+};
+
+const PAST = 2.2, FUTURE = 5.5;    // 画面に映す時間窓[s]
+const ROLL_RATIO = 0.46;           // キャンバス上部のうち譜面が占める割合
+
+// GM ドラムマップ（よく使うものだけ）。分からない番号は「音 nn」と出す
+const DRUM_NAMES = {
+  35: "バスドラム", 36: "バスドラム", 37: "リムショット", 38: "スネア", 40: "スネア",
+  41: "タム(低)", 42: "ハイハット", 43: "タム(低)", 44: "ハイハット(踏)",
+  45: "タム(中)", 46: "オープンハイハット", 47: "タム(中)", 48: "タム(高)",
+  49: "クラッシュ", 50: "タム(高)", 51: "ライド", 53: "ライドベル", 57: "クラッシュ2",
+};
+const laneName = (p) => DRUM_NAMES[p] || `音 ${p}`;
+
+// ---------- API ----------
+async function boot() {
+  const h = await (await fetch("/api/health")).json();
+  S.hw = h.hardware;
+  const b = $("badge");
+  S.drive = h.drive !== false;
+  b.textContent = !h.hardware ? "デモ（シミュレーション）"
+                : S.drive ? "実機モード" : "実機・駆動なし検証";
+  b.className = "badge " + (h.hardware && S.drive ? "hw" : "mock");
+  $("bpm").min = h.bpm_range[0]; $("bpm").max = h.bpm_range[1];
+  $("infoline").textContent = `曲 ${h.n_songs} / モデル ${h.n_models}`;
+
+  S.songs = await (await fetch("/api/songs")).json();
+  renderSongs();
+  connectStream();
+  requestAnimationFrame(draw);
+}
+
+function renderSongs() {
+  const box = $("songs");
+  box.innerHTML = "";
+  if (!S.songs.length) {
+    box.innerHTML = '<div style="color:var(--muted);font-size:13px">MIDIが見つかりません</div>';
+    return;
+  }
+  S.songs.forEach((s) => {
+    const el = document.createElement("button");
+    el.className = "song" + (S.sel === s.name ? " sel" : "");
+    el.innerHTML = `${s.label || s.name}<small>${s.n_notes} 打 · ${s.duration.toFixed(1)} 秒 · 元 ${s.nominal_bpm} BPM</small>`;
+    el.onclick = () => selectSong(s);
+    box.appendChild(el);
+  });
+}
+
+async function selectSong(s) {
+  S.sel = s.name;
+  S.nominalBpm = s.nominal_bpm;
+  $("bpm").value = Math.round(s.nominal_bpm);
+  S.bpm = Math.round(s.nominal_bpm);
+  $("bpmval").textContent = S.bpm;
+  updateBpmHint();
+  renderSongs();
+  $("start").disabled = false;
+  S.score = await (await fetch(`/api/song/${encodeURIComponent(s.name)}?bpm=${S.bpm}`)).json();
+  S.maxTarget = Math.max(...(S.score.target || [1]), 1);
+  S.samples = []; S.hits = []; S.playT = 0;
+  showOverlay("スタートを おしてね", `${s.label || s.name} · ${S.bpm} BPM`);
+}
+
+async function syncTo(song, bpm) {
+  const s = S.songs.find((x) => x.name === song);
+  S.sel = song; S.bpm = Math.round(bpm);
+  if (s) S.nominalBpm = s.nominal_bpm;
+  $("bpm").value = S.bpm; $("bpmval").textContent = S.bpm;
+  updateBpmHint(); renderSongs(); $("start").disabled = false;
+  S.score = await (await fetch(`/api/song/${encodeURIComponent(song)}?bpm=${S.bpm}`)).json();
+  S.maxTarget = Math.max(...(S.score.target || [1]), 1);
+}
+
+function updateBpmHint() {
+  const d = S.bpm - S.nominalBpm;
+  $("bpmhint").textContent =
+    Math.abs(d) < 0.5 ? "楽譜どおり" : (d > 0 ? `楽譜より ${d} 速い` : `楽譜より ${-d} 遅い`);
+}
+
+$("bpm").oninput = async (e) => {
+  S.bpm = +e.target.value;
+  $("bpmval").textContent = S.bpm;
+  updateBpmHint();
+  if (S.sel) {
+    S.score = await (await fetch(`/api/song/${encodeURIComponent(S.sel)}?bpm=${S.bpm}`)).json();
+  S.maxTarget = Math.max(...(S.score.target || [1]), 1);
+  }
+};
+
+$("start").onclick = async () => {
+  if (!S.sel) return;
+  S.samples = []; S.hits = []; S.playT = 0; S.lastT = 0;
+  const r = await fetch("/api/start", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({song: S.sel, bpm: S.bpm}),
+  });
+  if (!r.ok) { showOverlay("開始できません", await r.text()); return; }
+  const j = await r.json();
+  S.score = j.score;
+  S.maxTarget = Math.max(...(S.score.target || [1]), 1);
+  hideOverlay();
+};
+
+$("stop").onclick = () => fetch("/api/stop", {method: "POST"});
+
+// ---------- テレメトリ受信（SSE / EventSource） ----------
+// WebSocket ではなく SSE。サーバ側を Python 標準ライブラリだけで書くため。
+// 切断時の再接続は EventSource が自動でやってくれる。
+function connectStream() {
+  const es = new EventSource("/events");
+  es.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type !== "tick") return;
+    if (m.run_id !== undefined && m.run_id !== S.runId) {
+      S.runId = m.run_id; S.samples = []; S.hits = []; S.playT = 0; S.lastT = 0;
+      // 別の画面から開始された場合でも、この画面が譜面を追いかけられるようにする
+      if (m.song && (S.sel !== m.song || S.bpm !== m.bpm)) syncTo(m.song, m.bpm);
+    }
+    if (m.s && m.s.length) {
+      for (const row of m.s) S.samples.push(row);
+      if (S.samples.length > 40000) S.samples.splice(0, S.samples.length - 40000);
+      S.lastT = m.s[m.s.length - 1][0];
+      S.lastWall = performance.now() / 1000;
+    }
+    S.hits = m.hits || [];
+    S.state = m.state; S.info = m.info || {};
+    updateStats(m);
+  };
+  es.onerror = () => { /* EventSource が自動再接続する */ };
+}
+
+function updateStats(m) {
+  const last = S.samples[S.samples.length - 1];
+  if (last) {
+    for (let i = 0; i < 3; i++) {
+      const cmd = last[1 + i], meas = last[4 + i];
+      $("f" + i).style.width = (100 * Math.min(cmd / 0.6, 1)).toFixed(1) + "%";
+      $("g" + i).style.left = (100 * Math.min(meas / 0.6, 1)).toFixed(1) + "%";
+      $("v" + i).textContent = cmd.toFixed(3);
+    }
+    $("wrist").textContent = last[7].toFixed(1);
+    $("grip").textContent = last[8].toFixed(1);
+    $("force").textContent = last[9].toFixed(1);
+  }
+  const n = m.n_hits || 0;
+  if (n >= 4) {
+    const pct = Math.round((100 * (m.good || 0)) / n);
+    $("pct").textContent = pct + "%";
+    $("pct").style.color = pct >= 80 ? "var(--good)" : pct >= 50 ? "var(--actual)" : "var(--miss)";
+    $("scoresub").textContent = `${m.good}/${n} 打 · 平均ズレ ${m.mean_abs_err_ms ?? "—"} ms`;
+  } else if (n > 0) {
+    $("pct").textContent = n + " 打";
+    $("pct").style.color = "var(--fg)";
+    $("scoresub").textContent = "けいそく中…";
+  } else {
+    $("pct").textContent = "—";
+    $("pct").style.color = "var(--fg)";
+    $("scoresub").textContent = "±30ms いないの わりあい";
+  }
+
+  if (m.state === "finished" || m.state === "stopped") {
+    const pct = n ? Math.round((100 * m.good) / n) : 0;
+    showOverlay(m.state === "finished" ? `${pct}% せいこう！` : "ストップしました",
+                n ? `${m.good}/${n} 打が ±30ms いない · 平均ズレ ${m.mean_abs_err_ms} ms` : "");
+  } else if (m.state === "error") {
+    showOverlay("エラー", m.message || "");
+  } else if (m.state === "running") {
+    hideOverlay();
+  }
+  const inf = m.info || {};
+  $("infoline").textContent =
+    `${inf.plant ?? "-"} / ${inf.policy ?? "-"}` +
+    (inf.obs_dim ? ` · obs ${inf.obs_dim}次元` : "") +
+    (inf.force_zero !== undefined ? ` · 力ゼロ点 ${inf.force_zero}N` : "");
+}
+
+function showOverlay(big, sub) {
+  $("overlay").style.display = "flex";
+  $("overlay").children[0].textContent = big;
+  $("overlay").children[1].textContent = sub || "";
+}
+function hideOverlay() { $("overlay").style.display = "none"; }
+
+// ---------- 描画 ----------
+const cv = $("roll"), ctx = cv.getContext("2d");
+function fit() {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return r;
+}
+window.addEventListener("resize", fit);
+
+function draw() {
+  const r = fit();
+  const W = r.width, H = r.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // 再生位置: 最後に受け取ったサンプル時刻から実時間で補間
+  if (S.state === "running") {
+    S.playT = S.lastT + (performance.now() / 1000 - S.lastWall);
+  }
+  const t0 = S.playT - PAST, t1 = S.playT + FUTURE;
+  const x = (t) => ((t - t0) / (t1 - t0)) * W;
+  const headX = x(S.playT);
+
+  const rollH = H * ROLL_RATIO, forceY0 = rollH + 10, forceH = H - forceY0 - 6;
+
+  // --- 背景グリッド（拍線） ---
+  const beat = 60 / (S.bpm || 120);
+  ctx.strokeStyle = "#1b2331"; ctx.lineWidth = 1;
+  const b0 = Math.floor(t0 / beat) * beat;
+  for (let t = b0; t < t1; t += beat) {
+    const px = Math.round(x(t)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, H); ctx.stroke();
+  }
+
+  // --- 譜面（ピアノロール） ---
+  const lanes = (S.score && S.score.lanes) || [];
+  const nL = Math.max(lanes.length, 1);
+  const laneH = Math.min(rollH / nL, 56);
+  const padTop = (rollH - laneH * nL) / 2;
+  const laneY = (pitch) => {
+    const i = lanes.indexOf(pitch);
+    return padTop + (nL - 1 - (i < 0 ? 0 : i)) * laneH;
+  };
+
+  for (let i = 0; i < nL; i++) {
+    if (i % 2 === 0) { ctx.fillStyle = "#111823"; ctx.fillRect(0, padTop + i * laneH, W, laneH); }
+  }
+  // レーン名（音符に重ならないよう背景を敷く）
+  if (lanes.length) {
+    ctx.font = "600 12px system-ui"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    lanes.forEach((p) => {
+      const label = laneName(p), cy = laneY(p) + laneH / 2;
+      const w = ctx.measureText(label).width;
+      ctx.fillStyle = "rgba(11,15,22,.88)";
+      roundRect(6, cy - 11, w + 16, 22, 6); ctx.fill();
+      ctx.fillStyle = "#8fa3ba";
+      ctx.fillText(label, 14, cy);
+    });
+    ctx.textBaseline = "alphabetic";
+  }
+
+  if (S.score) {
+    for (const n of S.score.notes) {
+      if (n.t > t1 || n.t + Math.max(n.d, 0.12) < t0) continue;
+      const px = x(n.t), py = laneY(n.p) + laneH * 0.18, hgt = laneH * 0.64;
+      const w = Math.max(x(n.t + Math.max(n.d, 0.09)) - px, 8);
+      const passed = n.t <= S.playT;
+      const near = Math.abs(n.t - S.playT) < 0.06;
+      ctx.globalAlpha = passed ? 0.35 : 1;
+      ctx.fillStyle = near ? "#e0f2fe" : "var(--target)";
+      ctx.fillStyle = near ? "#e0f2fe" : "#38bdf8";
+      roundRect(px, py, w, hgt, Math.min(hgt / 2, 7));
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      if (near) { ctx.shadowColor = "#7dd3fc"; ctx.shadowBlur = 22; ctx.fill(); ctx.shadowBlur = 0; }
+    }
+  }
+
+  // --- 力の波形（目標 vs 実測） ---
+  ctx.fillStyle = "#0e141d";
+  ctx.fillRect(0, forceY0, W, forceH);
+  const maxF = Math.max(S.maxTarget, 2);
+  const base = forceH * 0.13;                       // 0 N の位置（下端から少し上）
+  const span = forceH - base - 8;
+  const fy = (v) => forceY0 + forceH - base - Math.max(Math.min(v / maxF, 1.1), -0.35) * span;
+
+  // 目標力: 譜面から来るので未来ぶんも描ける（＝これから何を叩くかが見える）
+  const tg = S.score && S.score.target;
+  if (tg && tg.length) {
+    const dt = S.score.dt || 0.02;
+    const i0 = Math.max(Math.floor(t0 / dt), 0), i1 = Math.min(Math.ceil(t1 / dt), tg.length - 1);
+    if (i1 > i0) {
+      ctx.beginPath(); ctx.moveTo(x(i0 * dt), fy(0));
+      for (let i = i0; i <= i1; i++) ctx.lineTo(x(i * dt), fy(tg[i]));
+      ctx.lineTo(x(i1 * dt), fy(0)); ctx.closePath();
+      ctx.fillStyle = "rgba(56,189,248,.20)"; ctx.fill();
+      ctx.strokeStyle = "rgba(56,189,248,.55)"; ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (let i = i0; i <= i1; i++) i === i0 ? ctx.moveTo(x(i * dt), fy(tg[i])) : ctx.lineTo(x(i * dt), fy(tg[i]));
+      ctx.stroke();
+    }
+  }
+
+  // 実測力: 起きたことだけ
+  const seg = S.samples.filter((s) => s[0] >= t0 && s[0] <= t1);
+  if (seg.length > 1) {
+    ctx.beginPath();
+    seg.forEach((s, i) => (i ? ctx.lineTo(x(s[0]), fy(s[9])) : ctx.moveTo(x(s[0]), fy(s[9]))));
+    ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2.2;
+    ctx.lineJoin = "round"; ctx.stroke();
+  }
+
+  // --- 実打点マーカー ---
+  let latest = null;
+  for (const h of S.hits) {
+    if (h.t < t0 || h.t > t1) continue;
+    const ok = h.err_ms !== null && Math.abs(h.err_ms) <= 30;
+    ctx.fillStyle = h.err_ms === null ? "#64748b" : ok ? "#34d399" : "#f87171";
+    ctx.beginPath(); ctx.arc(x(h.t), forceY0 + 12, 5, 0, Math.PI * 2); ctx.fill();
+    if (h.err_ms !== null && h.t <= S.playT) latest = h;
+  }
+  // ラベルは直近の1打だけ（重なって読めなくなるため）
+  if (latest && latest.t > S.playT - 1.0) {
+    const ok = Math.abs(latest.err_ms) <= 30;
+    ctx.font = "700 15px system-ui"; ctx.textAlign = "center";
+    ctx.fillStyle = ok ? "#34d399" : "#f87171";
+    ctx.fillText(`${latest.err_ms > 0 ? "+" : ""}${latest.err_ms.toFixed(0)}ms`,
+                 x(latest.t), forceY0 - 8);
+  }
+
+  // --- ±30ms 帯 + 再生ヘッド ---
+  const halfPx = (0.03 / (t1 - t0)) * W;
+  ctx.fillStyle = "rgba(52,211,153,.13)";
+  ctx.fillRect(headX - halfPx, 0, halfPx * 2, H);
+  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(headX, 0); ctx.lineTo(headX, H); ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath(); ctx.moveTo(headX - 7, 0); ctx.lineTo(headX + 7, 0); ctx.lineTo(headX, 11); ctx.fill();
+
+  // --- カウントイン ---
+  const leadIn = (S.score && S.score.lead_in) || 0;
+  if (S.state === "running" && S.playT < leadIn) {
+    const remain = Math.ceil(leadIn - S.playT);
+    ctx.font = "800 120px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(255,255,255,.85)";
+    ctx.fillText(String(remain), W / 2, H / 2);
+    ctx.textBaseline = "alphabetic";
+  }
+
+  requestAnimationFrame(draw);
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+boot();
+</script>
+</body>
+</html>

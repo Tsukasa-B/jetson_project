@@ -1,0 +1,12 @@
+# OCデモGUI の追加依存: なし
+#
+# Jetsonコンテナは pip の索引が jetson-containers 専用のものに固定されており、
+# 外部PyPIに出られないことがあるため、このデモは Python 標準ライブラリと、
+# jetson_project が既に使っている numpy / onnxruntime / pyserial だけで動きます。
+#
+#   - HTTPサーバ    : http.server（標準）
+#   - テレメトリ配信 : SSE / EventSource（標準）
+#   - MIDI読み込み  : oc_demo/midiparse.py（自前・標準ライブラリのみ）
+#   - manifest.yaml : PyYAML があれば読む。無ければモデル名だけで動く（任意）
+#
+# つまり pip install は不要です。
