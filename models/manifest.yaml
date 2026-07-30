@@ -1,0 +1,98 @@
+# =============================================================================
+# models/manifest.yaml  —  デプロイ可能なポリシーの定義（唯一の真実）
+#
+# ここに書いた値が「正」。起動時に ONNX の実体（入力数・obs次元）と突き合わせ、
+# 1つでも食い違ったら即エラーで停止する（静かに間違わないため）。
+#
+# 観測ベクトル（sim: user0/porcaro_2026_env.py::_get_observations と同一）
+#   base_obs = [q_wrist, q_grip, qd_wrist, qd_grip, prev_action(3),
+#               sin(phase), cos(phase), bpm/180, lookahead(L)]
+#   L            = round(lookahead_horizon / control_dt)
+#   base_obs_dim = 10 + L
+#   obs_dim      = base_obs_dim * frame_stack
+#   frame_stack>1 のときの並びは [最古 ... 最新]（最新が末尾）。初期値はゼロ埋め。
+# =============================================================================
+
+defaults:
+  control_dt: 0.02        # 制御周期 [s] = 50Hz
+  p_max: 0.6              # 指令圧力の上限 [MPa]   p = (clip(a,-1,1)+1)/2 * p_max
+  target_force: 20.0      # 目標打撃力 [N]（lookahead の正規化に使う）
+  serial_port: /dev/ttyUSB0
+  baud_rate: 230400
+
+# -----------------------------------------------------------------------------
+# IROS投稿時にデプロイしたモデル（2026-02〜03 に実機実績あり）
+#   ※ファイル名は旧リポジトリから論文名に振り直してある。対応は legacy_name を参照。
+# -----------------------------------------------------------------------------
+IROS:
+  A:
+    file: IROS/modelA.onnx
+    arch: lstm
+    lookahead_horizon: 0.1
+    frame_stack: 1
+    label: "A: LSTM, lookahead=0.1s"
+    legacy_name: modelD.onnx
+    note: "IROS実機データ IROS/deploy_results/modelD/ に対応"
+  B:
+    file: IROS/modelB.onnx
+    arch: lstm
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "B: LSTM, lookahead=0.5s"
+    legacy_name: modelB.onnx
+    note: "原論文の主役。IROS/deploy_results/modelB/ に対応（旧名と一致）"
+  C:
+    file: IROS/modelC.onnx
+    arch: lstm
+    lookahead_horizon: 1.0
+    frame_stack: 1
+    label: "C: LSTM, lookahead=1.0s"
+    legacy_name: modelA.onnx
+    note: "IROS実機データ IROS/deploy_results/modelA/ に対応"
+  D:
+    file: IROS/modelD.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "D: MLP, lookahead=0.5s"
+    legacy_name: modelC.onnx
+    note: "記憶なしMLP。IROS/deploy_results/modelC/ に実機データあり"
+
+# -----------------------------------------------------------------------------
+# RA-L用にexportするモデル置き場（これから埋める）
+#   sim側 logs/rsl_rl/.../model_1499.pt を ONNX export して models/RAL/ に置き、
+#   下のコメントを外して使う。export手順は models/RAL/README.md 参照。
+# -----------------------------------------------------------------------------
+RAL: {}
+  # A:
+  #   file: RAL/modelA.onnx
+  #   arch: lstm
+  #   lookahead_horizon: 0.1
+  #   frame_stack: 1
+  #   label: "A: LSTM, lookahead=0.1s"
+  #   seed: 1000
+  #   checkpoint: "logs/rsl_rl/<run>/model_1499.pt"
+  # B:
+  #   file: RAL/modelB.onnx
+  #   arch: lstm
+  #   lookahead_horizon: 0.5
+  #   frame_stack: 1
+  #   label: "B: LSTM, lookahead=0.5s"
+  # C:
+  #   file: RAL/modelC.onnx
+  #   arch: lstm
+  #   lookahead_horizon: 1.0
+  #   frame_stack: 1
+  #   label: "C: LSTM, lookahead=1.0s"
+  # D:
+  #   file: RAL/modelD.onnx
+  #   arch: mlp
+  #   lookahead_horizon: 0.5
+  #   frame_stack: 1
+  #   label: "D: MLP, lookahead=0.5s"
+  # E:
+  #   file: RAL/modelE.onnx
+  #   arch: mlp
+  #   lookahead_horizon: 0.5
+  #   frame_stack: 5          # ★ obs_dim = 35 * 5 = 175
+  #   label: "E: MLP+framestack(k=5), lookahead=0.5s"
