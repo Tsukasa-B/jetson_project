@@ -1,0 +1,69 @@
+# =============================================================================
+# experiment_plan_lookahead.yaml — RA-L 実機検証 第2セッション（先読み軸）
+#
+#   python3 tools/run_experiment_batch.py --plan tools/experiment_plan_lookahead.yaml --dry_run
+#   python3 tools/run_experiment_batch.py --plan tools/experiment_plan_lookahead.yaml --shuffle --seed 1
+#
+# 目的は2つ:
+#   (1) 先読み軸 A(0.1s) / B(0.5s) / C(1.0s) を実機で検証する。
+#       第1セッションで検証したのは記憶軸(B/D/E)のみで、先読み軸はsim限定だった。
+#   (2) B を再取得してアンカーにする。
+#       第1セッション(2026-07-30)の B の値が再現すれば、
+#       「セッションをまたいで再現した」と書けて、
+#       ・1セッションしかないという弱点
+#       ・実験中のワイヤー脱落
+#       の両方が同時に片付く。★これが B を入れる理由。B抜きでは絶対にやらないこと。
+#
+# 曲は第1セッションと完全に同一（sim評価マトリクスの3条件）。
+# 変えるとセッション間比較ができなくなる。
+#
+# ★ --seed は 1 にすること（第1セッションは 0）。同じ順序を繰り返さないため。
+# =============================================================================
+
+name: "RA-L 実機検証 v2（先読み軸: A vs B vs C、Bはアンカー）"
+est_sec_per_run: 60
+cooldown_sec: 3
+
+blocks:
+  - name: "lookahead_axis"
+    models:
+      # --- A: LSTM, lookahead 0.1s（先読みが短い） ---
+      - RAL/A_seed1
+      - RAL/A_seed2
+      - RAL/A_seed3
+      - RAL/A_seed4
+      - RAL/A_seed5
+      # --- B: LSTM, lookahead 0.5s（★アンカー。第1セッションと比較する） ---
+      - RAL/B_seed1
+      - RAL/B_seed2
+      - RAL/B_seed3
+      - RAL/B_seed4
+      - RAL/B_seed5
+      # --- C: LSTM, lookahead 1.0s（先読みが長い） ---
+      - RAL/C_seed1
+      - RAL/C_seed2
+      - RAL/C_seed3
+      - RAL/C_seed4
+      - RAL/C_seed5
+    songs:
+      - songs/test_double_bpm160.mid      # sim: double_160
+      - songs/gmd_03_high_bpm138.mid      # sim: gmd_03_high_bpm138
+      - songs/gmd_04_extreme_bpm170.mid   # sim: gmd_04_extreme_bpm170
+    trials: 3
+    # → 15モデル × 3曲 × 3trial = 135ラン（約2.3時間）
+
+# ---------------------------------------------------------------------------
+# 実験前チェックリスト（第1セッションの教訓）
+# ---------------------------------------------------------------------------
+#  □ 力センサのアンプに通電しているか
+#      → --verify で手でスティックを押し当て、F: が動くこと
+#  □ 手のひら関節のワイヤーが外れていないか（第1セッションで途中脱落した）
+#      → 開始前・終了後に加えて、途中でも1時間おきに目視すること
+#  □ コンプレッサ供給圧
+#  □ スティック/ドラムの位置が第1セッションから変わっていないか
+#      → 変わっているとBのアンカーが機能しない
+#  □ 室温
+#
+# 途中経過の確認（1時間ごとくらいに走らせるとよい）:
+#   python3 analysis/strike_metrics.py results/RAL --summary /tmp/mid.csv
+#   → B の成功率が 0.13 前後に出ていればアンカーとして機能している

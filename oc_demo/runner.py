@@ -70,9 +70,17 @@ class RunConfig:
     lead_in: float = 1.5  # カウントイン（曲頭前の待ち）秒
     tail: float = 1.0  # 曲尾の余韻
     drive: bool = True  # False なら圧力0を送り続ける（駆動なし検証モード）
-    force_threshold_N: float = 0.8  # 打点判定のしきい値
+    # 打点判定のしきい値。実データ(IROS/deploy_results/modelB/*.csv, 200Hz)で
+    # 無負荷ノイズの標準偏差が 0.27〜0.52N、実打撃のピークは13〜19N平均だったため、
+    # ノイズに対し余裕を持たせつつピークの1/3以下に収まる 5.0N とした
+    # (oc_demo/parity_check.py 実行時のレポート参照)。
+    force_threshold_N: float = 5.0
+    # 同一打の減衰カーブがノイズでしきい値を割ってすぐ戻り、1打が2回カウント
+    # されるのを防ぐ不応期。実データでの誤カウント間隔は 10〜20ms だったため、
+    # デモ曲最速パターン(ダブルストローク)の間隔より十分短い 50ms とした。
+    hit_refractory_s: float = 0.05
     force_limit_N: float = 60.0  # これを超えたら安全停止
-    zero_force_samples: int = 50  # 起動直後の力センサゼロ点推定に使うフレーム数
+    zero_force_window_s: float = 0.25  # 起動直後の力センサゼロ点推定に使う時間窓[s]
 
 
 def build_run_target(score: Score, bpm: float, lead_in: float, tail: float
@@ -100,6 +108,9 @@ class Runner:
         self.state = "idle"  # idle|arming|running|finished|stopped|error
         self.message = ""
         self.samples: deque[Sample] = deque(maxlen=telemetry_max)
+        # 力波形描画用の200Hz相当サブフレーム (t, force_N)。50Hzの self.samples
+        # とは別チャンネル(P0-1: 50Hzサンプルだけだと打撃スパイクを取りこぼす)。
+        self.subforce: deque[tuple] = deque(maxlen=telemetry_max * 4)
         self.hits: list[Hit] = []
         self.run_id = 0  # 接続側がカーソルをリセットする判定に使う
         self._lock = threading.Lock()
@@ -117,6 +128,7 @@ class Runner:
             raise RuntimeError("already running")
         self._stop.clear()
         self.samples.clear()
+        self.subforce.clear()
         self.hits.clear()
         self.run_id += 1
         self.state = "arming"
@@ -176,12 +188,18 @@ class Runner:
             note_times = np.array([n.time + cfg.lead_in for n in played.notes])
 
             # --- 力センサのゼロ点を実測（無負荷前提） -----------------
+            # read()を等間隔で呼ぶだけだと50Hz相当しか標本が取れず、P0-1と同じ
+            # 理由でゼロ点推定も本来の受信レートより粗くなる。read_burst()で
+            # 窓内に届いた全フレームを使う。
             zs = []
-            for _ in range(cfg.zero_force_samples):
-                zs.append(plant.read().force_N)
+            t_end = time.time() + cfg.zero_force_window_s
+            while time.time() < t_end:
+                for fr0 in plant.read_burst():
+                    zs.append(fr0.force_N)
                 time.sleep(0.005)
             self.force_zero = float(np.median(zs)) if zs else 0.0
             self.info["force_zero"] = round(self.force_zero, 3)
+            self.info["force_zero_n_samples"] = len(zs)
 
             if isinstance(plant, SerialPlant):
                 plant.clear_buffer_for_sync()
@@ -192,6 +210,7 @@ class Runner:
             in_hit = False
             hit_peak = 0.0
             hit_start = 0.0
+            last_hit_t = -1e9  # 不応期の起点（初回は必ず通す）
 
             self.state = "running"
             start = time.time()
@@ -209,13 +228,23 @@ class Runner:
                     time.sleep(sleep)
                 t = step * adapter.CONTROL_DT
 
-                fr: Frame = plant.read()
+                # P0-1: 受信は200Hz、制御は50Hzなので read() を1回呼ぶだけだと
+                # 平均で4フレーム中3フレームが読み捨てられ、幅10ms前後の打撃力
+                # スパイクは半分近い確率でピークを取りこぼす（詳細は報告参照）。
+                # obs計算には引き続き最新1フレームだけを使い(パリティ維持)、
+                # テレメトリ・打点検出はステップ間に届いた全フレームを使う。
+                frames = plant.read_burst()
+                fr: Frame = frames[-1]
                 force = fr.force_N - self.force_zero
 
-                # 安全: 想定外の力が出たら止める
-                if abs(force) > cfg.force_limit_N:
+                # 安全: 想定外の力が出たら止める（全フレームの最大でチェック）
+                sub_forces = [f0.force_N - self.force_zero for f0 in frames]
+                peak_force_this_step = max(sub_forces, key=abs)
+                if abs(peak_force_this_step) > cfg.force_limit_N:
                     self.state = "error"
-                    self.message = f"力センサが {force:.1f} N に達したため安全停止しました"
+                    self.message = (
+                        f"力センサが {peak_force_this_step:.1f} N に達したため安全停止しました"
+                    )
                     break
 
                 q_wrist = math.radians(fr.wrist_deg)
@@ -247,23 +276,34 @@ class Runner:
                 # 実際には0を送る。ロボットは動かないが obs/推論/画面は本番と同じ経路を通る。
                 plant.write(pressures if cfg.drive else np.zeros(3))
 
-                # 打点検出（力の立ち上がり→ピーク→戻り）
-                if not in_hit and force > cfg.force_threshold_N:
-                    in_hit, hit_peak, hit_start = True, force, t
-                elif in_hit:
-                    if force > hit_peak:
-                        hit_peak, hit_start = force, t
-                    if force < cfg.force_threshold_N * 0.5:
-                        in_hit = False
-                        nt, err = self._match_note(hit_start, note_times)
-                        with self._lock:
-                            self.hits.append(Hit(hit_start, hit_peak, nt, err))
+                # 打点検出（力の立ち上がり→ピーク→戻り）。50Hzの force ではなく
+                # そのステップ間に届いた全フレーム(sub_forces)を1個ずつ処理する
+                # ことで、50Hzサンプルの間に隠れる打撃も逃さない。
+                sub_samples = []
+                for f0, sf in zip(frames, sub_forces):
+                    sub_t = f0.stamp - start
+                    sub_samples.append((sub_t, sf))
+                    if not in_hit and sf > cfg.force_threshold_N:
+                        if sub_t - last_hit_t >= cfg.hit_refractory_s:
+                            in_hit, hit_peak, hit_start = True, sf, sub_t
+                        # else: 不応期中。直前の打の減衰ノイズとみなして無視する
+                        # （実データで確認した誤カウント間隔10〜20msをここで吸収）
+                    elif in_hit:
+                        if sf > hit_peak:
+                            hit_peak = sf
+                        if sf < cfg.force_threshold_N * 0.5:
+                            in_hit = False
+                            last_hit_t = hit_start
+                            nt, err = self._match_note(hit_start, note_times)
+                            with self._lock:
+                                self.hits.append(Hit(hit_start, hit_peak, nt, err))
 
                 with self._lock:
                     self.samples.append(
                         Sample(t, pressures, fr.meas_p, fr.wrist_deg, fr.grip_deg,
-                               float(force), float(target[step]))
+                               float(max(sub_forces, key=abs)), float(target[step]))
                     )
+                    self.subforce.extend(sub_samples)
             else:
                 self.state = "finished"
 
@@ -291,18 +331,22 @@ class Runner:
         return nt, err
 
     # ------------------------------------------------------------------
-    def drain(self, cursor: int = 0) -> tuple[list, list, int]:
+    def drain(self, cursor: int = 0, sf_cursor: int = 0) -> tuple[list, list, int, list, int]:
         """cursor 以降のサンプルと、現時点のヒット一覧、次のcursorを返す。
 
-        cursor は呼び出し側（WebSocket接続ごと）が持つ。Runner側で持つと
-        ブラウザを2枚開いたときにサンプルが取り合いになって歯抜けになる。
+        cursor / sf_cursor は呼び出し側（WebSocket接続ごと）が持つ。Runner側で
+        持つとブラウザを2枚開いたときにサンプルが取り合いになって歯抜けになる。
         """
         with self._lock:
             all_samples = list(self.samples)
+            all_sf = list(self.subforce)
             hits = [h.to_dict() for h in self.hits]
         cursor = max(0, min(cursor, len(all_samples)))
+        sf_cursor = max(0, min(sf_cursor, len(all_sf)))
         new = all_samples[cursor:]
-        return [s.to_list() for s in new], hits, len(all_samples)
+        new_sf = all_sf[sf_cursor:]
+        sf_rows = [[round(t, 4), round(f, 3)] for t, f in new_sf]
+        return [s.to_list() for s in new], hits, len(all_samples), sf_rows, len(all_sf)
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -312,7 +356,7 @@ class Runner:
         return {
             "state": self.state,
             "message": self.message,
-            "song": self.cfg.score.name,
+            "song": self.cfg.score.id,  # P2-1: 複数ディレクトリでも一意なID
             "bpm": self.cfg.bpm,
             "lead_in": self.cfg.lead_in,
             "elapsed": None if self.started_at is None else round(time.time() - self.started_at, 3),

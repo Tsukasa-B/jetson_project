@@ -1,0 +1,31 @@
+{
+  "model_key": "RAL/B_seed5",
+  "model_label": "B: LSTM, lookahead=0.5s",
+  "model_file": "models/RAL/modelB_seed5.onnx",
+  "arch": "lstm",
+  "lookahead_horizon": 0.5,
+  "lookahead_steps": 25,
+  "frame_stack": 1,
+  "obs_dim": 35,
+  "manifest_extra": {
+    "seed": 5,
+    "checkpoint": "model_1499.pt"
+  },
+  "midi": "songs/gmd_04_extreme_bpm170.mid",
+  "bpm": 170.0000850000425,
+  "trial": 3,
+  "control_dt": 0.02,
+  "p_max": 0.6,
+  "target_force": 20.0,
+  "qd_clip": 20.0,
+  "mock": false,
+  "verify": false,
+  "elapsed_sec": 24.64,
+  "packets_received": 4934,
+  "packets_expected_at_200hz": 4928,
+  "packet_yield": 1.0012,
+  "bytes_discarded_on_resync": 0,
+  "control_steps": 1232,
+  "git_rev": "f67add9",
+  "timestamp": "2026-07-31T07:32:23+0000"
+}

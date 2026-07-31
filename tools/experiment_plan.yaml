@@ -1,0 +1,64 @@
+# =============================================================================
+# experiment_plan.yaml — RA-L 実機検証の実験計画
+#
+#   python3 tools/run_experiment_batch.py --plan tools/experiment_plan.yaml --dry_run
+#   python3 tools/run_experiment_batch.py --plan tools/experiment_plan.yaml --shuffle
+#
+# 条件はsim側の評価マトリクスと揃えてある。
+# sim (porcaro_2026/eval_logs/eval_matrix_manifest.json) は現在この3条件が
+# 5モデル×5seedで全て完了している:
+#     double_160 / gmd_03_high_bpm138 / gmd_04_extreme_bpm170
+# → 実機でも同じ3条件を回せば sim と直接つき合わせられる。
+# =============================================================================
+
+name: "RA-L 実機検証 v1（記憶軸: B vs D vs E）"
+est_sec_per_run: 60      # 1ランの所要目安（曲18-30秒＋準備）
+cooldown_sec: 3
+
+blocks:
+  # ---------------------------------------------------------------------------
+  # 本命ブロック: 論文のheadline「記憶は必須だが再帰は不要」を実機で決める。
+  #   E ≈ B （実機ノイズ内）かつ E > D （複雑リズム） が成立すれば主張が立つ。
+  #   simで評価済みの3条件のみ。5seed全部回して「seed運ではない」ことを示す。
+  # ---------------------------------------------------------------------------
+  - name: "main_memory_axis"
+    models:
+      - RAL/B_seed1
+      - RAL/B_seed2
+      - RAL/B_seed3
+      - RAL/B_seed4
+      - RAL/B_seed5
+      - RAL/D_seed1
+      - RAL/D_seed2
+      - RAL/D_seed3
+      - RAL/D_seed4
+      - RAL/D_seed5
+      - RAL/E_seed1
+      - RAL/E_seed2
+      - RAL/E_seed3
+      - RAL/E_seed4
+      - RAL/E_seed5
+    songs:
+      - songs/test_double_bpm160.mid      # sim: double_160
+      - songs/gmd_03_high_bpm138.mid      # sim: gmd_03_high_bpm138
+      - songs/gmd_04_extreme_bpm170.mid   # sim: gmd_04_extreme_bpm170
+    trials: 3
+    # → 15モデル × 3曲 × 2trial = 90ラン（約90分）
+
+  # ---------------------------------------------------------------------------
+  # 対照ブロック: 簡単なリズムでは全群横並びになることを示す（"emergence"の対比）。
+  #   seedは代表1本ずつで十分。
+  # ---------------------------------------------------------------------------
+  - name: "easy_control"
+    models: [RAL/B_seed1, RAL/D_seed1, RAL/E_seed1]
+    songs:
+      - songs/test_single4_bpm60.mid
+      - songs/test_single8_bpm120.mid
+    trials: 3
+    # → 3モデル × 2曲 × 3trial = 18ラン（約18分）
+
+# ---------------------------------------------------------------------------
+# 余裕があれば: 先読み軸 (A=0.1s / B=0.5s / C=1.0s)。
+# IROS時のデータと違い5seed揃っているので、先読み軸も実機で言えるようになる。
+# 上の2ブロックが終わってから、別ファイルに分けて回すこと。
+# ---------------------------------------------------------------------------

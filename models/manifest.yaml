@@ -63,36 +63,205 @@ IROS:
 #   sim側 logs/rsl_rl/.../model_1499.pt を ONNX export して models/RAL/ に置き、
 #   下のコメントを外して使う。export手順は models/RAL/README.md 参照。
 # -----------------------------------------------------------------------------
-RAL: {}
-  # A:
-  #   file: RAL/modelA.onnx
-  #   arch: lstm
-  #   lookahead_horizon: 0.1
-  #   frame_stack: 1
-  #   label: "A: LSTM, lookahead=0.1s"
-  #   seed: 1000
-  #   checkpoint: "logs/rsl_rl/<run>/model_1499.pt"
-  # B:
-  #   file: RAL/modelB.onnx
-  #   arch: lstm
-  #   lookahead_horizon: 0.5
-  #   frame_stack: 1
-  #   label: "B: LSTM, lookahead=0.5s"
-  # C:
-  #   file: RAL/modelC.onnx
-  #   arch: lstm
-  #   lookahead_horizon: 1.0
-  #   frame_stack: 1
-  #   label: "C: LSTM, lookahead=1.0s"
-  # D:
-  #   file: RAL/modelD.onnx
-  #   arch: mlp
-  #   lookahead_horizon: 0.5
-  #   frame_stack: 1
-  #   label: "D: MLP, lookahead=0.5s"
-  # E:
-  #   file: RAL/modelE.onnx
-  #   arch: mlp
-  #   lookahead_horizon: 0.5
-  #   frame_stack: 5          # ★ obs_dim = 35 * 5 = 175
-  #   label: "E: MLP+framestack(k=5), lookahead=0.5s"
+# --- RA-L用モデル (2026-07-30 export, A-E x seed1-5) ---
+RAL:
+  A_seed1:
+    file: RAL/modelA_seed1.onnx
+    arch: lstm
+    lookahead_horizon: 0.1
+    frame_stack: 1
+    label: "A: LSTM, lookahead=0.1s"
+    seed: 1
+    checkpoint: model_1499.pt
+  A_seed2:
+    file: RAL/modelA_seed2.onnx
+    arch: lstm
+    lookahead_horizon: 0.1
+    frame_stack: 1
+    label: "A: LSTM, lookahead=0.1s"
+    seed: 2
+    checkpoint: model_1499.pt
+  A_seed3:
+    file: RAL/modelA_seed3.onnx
+    arch: lstm
+    lookahead_horizon: 0.1
+    frame_stack: 1
+    label: "A: LSTM, lookahead=0.1s"
+    seed: 3
+    checkpoint: model_1499.pt
+  A_seed4:
+    file: RAL/modelA_seed4.onnx
+    arch: lstm
+    lookahead_horizon: 0.1
+    frame_stack: 1
+    label: "A: LSTM, lookahead=0.1s"
+    seed: 4
+    checkpoint: model_1499.pt
+  A_seed5:
+    file: RAL/modelA_seed5.onnx
+    arch: lstm
+    lookahead_horizon: 0.1
+    frame_stack: 1
+    label: "A: LSTM, lookahead=0.1s"
+    seed: 5
+    checkpoint: model_1499.pt
+  B_seed1:
+    file: RAL/modelB_seed1.onnx
+    arch: lstm
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "B: LSTM, lookahead=0.5s"
+    seed: 1
+    checkpoint: model_1499.pt
+  B_seed2:
+    file: RAL/modelB_seed2.onnx
+    arch: lstm
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "B: LSTM, lookahead=0.5s"
+    seed: 2
+    checkpoint: model_1499.pt
+  B_seed3:
+    file: RAL/modelB_seed3.onnx
+    arch: lstm
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "B: LSTM, lookahead=0.5s"
+    seed: 3
+    checkpoint: model_1499.pt
+  B_seed4:
+    file: RAL/modelB_seed4.onnx
+    arch: lstm
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "B: LSTM, lookahead=0.5s"
+    seed: 4
+    checkpoint: model_1499.pt
+  B_seed5:
+    file: RAL/modelB_seed5.onnx
+    arch: lstm
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "B: LSTM, lookahead=0.5s"
+    seed: 5
+    checkpoint: model_1499.pt
+  C_seed1:
+    file: RAL/modelC_seed1.onnx
+    arch: lstm
+    lookahead_horizon: 1.0
+    frame_stack: 1
+    label: "C: LSTM, lookahead=1.0s"
+    seed: 1
+    checkpoint: model_1499.pt
+  C_seed2:
+    file: RAL/modelC_seed2.onnx
+    arch: lstm
+    lookahead_horizon: 1.0
+    frame_stack: 1
+    label: "C: LSTM, lookahead=1.0s"
+    seed: 2
+    checkpoint: model_1499.pt
+  C_seed3:
+    file: RAL/modelC_seed3.onnx
+    arch: lstm
+    lookahead_horizon: 1.0
+    frame_stack: 1
+    label: "C: LSTM, lookahead=1.0s"
+    seed: 3
+    checkpoint: model_1499.pt
+  C_seed4:
+    file: RAL/modelC_seed4.onnx
+    arch: lstm
+    lookahead_horizon: 1.0
+    frame_stack: 1
+    label: "C: LSTM, lookahead=1.0s"
+    seed: 4
+    checkpoint: model_1499.pt
+  C_seed5:
+    file: RAL/modelC_seed5.onnx
+    arch: lstm
+    lookahead_horizon: 1.0
+    frame_stack: 1
+    label: "C: LSTM, lookahead=1.0s"
+    seed: 5
+    checkpoint: model_1499.pt
+  D_seed1:
+    file: RAL/modelD_seed1.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "D: MLP, lookahead=0.5s"
+    seed: 1
+    checkpoint: model_1499.pt
+  D_seed2:
+    file: RAL/modelD_seed2.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "D: MLP, lookahead=0.5s"
+    seed: 2
+    checkpoint: model_1499.pt
+  D_seed3:
+    file: RAL/modelD_seed3.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "D: MLP, lookahead=0.5s"
+    seed: 3
+    checkpoint: model_1499.pt
+  D_seed4:
+    file: RAL/modelD_seed4.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "D: MLP, lookahead=0.5s"
+    seed: 4
+    checkpoint: model_1499.pt
+  D_seed5:
+    file: RAL/modelD_seed5.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 1
+    label: "D: MLP, lookahead=0.5s"
+    seed: 5
+    checkpoint: model_1499.pt
+  E_seed1:
+    file: RAL/modelE_seed1.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 5
+    label: "E: MLP+framestack(k=5), lookahead=0.5s"
+    seed: 1
+    checkpoint: model_1499.pt
+  E_seed2:
+    file: RAL/modelE_seed2.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 5
+    label: "E: MLP+framestack(k=5), lookahead=0.5s"
+    seed: 2
+    checkpoint: model_1499.pt
+  E_seed3:
+    file: RAL/modelE_seed3.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 5
+    label: "E: MLP+framestack(k=5), lookahead=0.5s"
+    seed: 3
+    checkpoint: model_1499.pt
+  E_seed4:
+    file: RAL/modelE_seed4.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 5
+    label: "E: MLP+framestack(k=5), lookahead=0.5s"
+    seed: 4
+    checkpoint: model_1499.pt
+  E_seed5:
+    file: RAL/modelE_seed5.onnx
+    arch: mlp
+    lookahead_horizon: 0.5
+    frame_stack: 5
+    label: "E: MLP+framestack(k=5), lookahead=0.5s"
+    seed: 5
+    checkpoint: model_1499.pt

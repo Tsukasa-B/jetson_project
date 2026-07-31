@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,14 +25,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import adapter
 from .policy import discover_models
 from .runner import RunConfig, Runner, build_run_target
-from .score import Score, scan_midi_dir
+from .score import Score, scan_midi_dirs
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 
 
 class Settings:
-    midi_dir: Path = Path("midi")
+    midi_dirs: list = None  # type: ignore  # __init__ で [Path("midi")] にする
     models_dir: Path = Path("models")
     port_name: str = "/dev/ttyUSB0"
     use_hardware: bool = True
@@ -39,11 +41,14 @@ class Settings:
     bpm_min: float = 60.0
     bpm_max: float = 180.0
 
+    def __init__(self):
+        self.midi_dirs = [Path("midi")]
+
 
 SETTINGS = Settings()
-SONGS: dict = {}
+SONGS: dict = {}  # id -> Score
 MODELS: list = []
-LABELS: dict = {}
+LABELS: dict = {}  # source(ディレクトリ名) -> {name: {"label":.., "note":..}}
 RUNNER: Optional[Runner] = None
 _START_LOCK = threading.Lock()
 
@@ -52,19 +57,44 @@ _START_LOCK = threading.Lock()
 def reload_assets() -> None:
     """MIDI・モデル・表示名を読み直す。
 
-    表示名は <midi_dir>/labels.json（{"01_yonuchi": "四分打ち"} 形式）で上書きできる。
+    表示名は各 --midi-dir の labels.json
+    （{"01_yonuchi": "四分打ち（かんたん）"} または
+      {"01_yonuchi": {"label": "...", "note": "..."}} 形式）で上書きできる。
+    P2-1: --midi-dir を複数指定できる。曲名が別ディレクトリで衝突しても
+    Score.id ("ディレクトリ名/曲名") で一意に扱う。
     """
     global SONGS, MODELS, LABELS
-    SONGS = {s.name: s for s in scan_midi_dir(SETTINGS.midi_dir)}
+    scores = scan_midi_dirs(SETTINGS.midi_dirs)
+    SONGS = {s.id: s for s in scores}
     MODELS = discover_models(SETTINGS.models_dir)
+
     LABELS = {}
-    lp = Path(SETTINGS.midi_dir) / "labels.json"
-    if lp.exists():
+    for d in SETTINGS.midi_dirs:
+        d = Path(d)
+        lp = d / "labels.json"
+        if not lp.exists():
+            continue
         try:
-            LABELS = {str(k): str(v) for k, v in
-                      json.loads(lp.read_text(encoding="utf-8")).items()}
+            raw = json.loads(lp.read_text(encoding="utf-8"))
+            LABELS[d.name] = {str(k): v for k, v in raw.items()}
         except Exception as exc:  # noqa: BLE001
-            print(f"[oc_demo] labels.json を読めませんでした: {exc}")
+            print(f"[oc_demo] {lp} を読めませんでした: {exc}")
+
+
+def _label_of(s: Score) -> str:
+    entry = LABELS.get(s.source, {}).get(s.name)
+    if isinstance(entry, dict):
+        return str(entry.get("label", s.name))
+    if entry:
+        return str(entry)
+    return s.name
+
+
+def _note_of(s: Score) -> str:
+    entry = LABELS.get(s.source, {}).get(s.name)
+    if isinstance(entry, dict):
+        return str(entry.get("note", ""))
+    return ""
 
 
 def song_payload(s: Score, bpm: float, lead_in: float = 1.5) -> dict:
@@ -74,7 +104,8 @@ def song_payload(s: Score, bpm: float, lead_in: float = 1.5) -> dict:
     d = played.to_dict()
     for n in d["notes"]:
         n["t"] = round(n["t"] + lead_in, 4)
-    d["label"] = LABELS.get(s.name, s.name)
+    d["label"] = _label_of(s)
+    d["note"] = _note_of(s)
     d["lead_in"] = lead_in
     d["dt"] = adapter.CONTROL_DT
     d["target"] = [round(float(v), 3) for v in target]
@@ -173,7 +204,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/songs":
             return self._json([
-                {"name": s.name, "label": LABELS.get(s.name, s.name),
+                {"id": s.id, "name": s.name, "source": s.source,
+                 "label": _label_of(s), "note": _note_of(s),
                  "nominal_bpm": round(s.nominal_bpm, 1),
                  "duration": round(s.duration, 2),
                  "n_notes": len(s.notes), "lanes": s.lanes}
@@ -234,6 +266,7 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
         cursor = 0
+        sf_cursor = 0
         seen_runner = None
         seen_run = None
         try:
@@ -242,9 +275,10 @@ class Handler(BaseHTTPRequestHandler):
                     payload = {"type": "idle"}
                 else:
                     if seen_runner is not RUNNER or seen_run != RUNNER.run_id:
-                        cursor, seen_runner, seen_run = 0, RUNNER, RUNNER.run_id
-                    samples, hits, cursor = RUNNER.drain(cursor)
-                    payload = {"type": "tick", "s": samples, "hits": hits,
+                        cursor, sf_cursor = 0, 0
+                        seen_runner, seen_run = RUNNER, RUNNER.run_id
+                    samples, hits, cursor, sf, sf_cursor = RUNNER.drain(cursor, sf_cursor)
+                    payload = {"type": "tick", "s": samples, "sf": sf, "hits": hits,
                                "run_id": RUNNER.run_id, **RUNNER.snapshot()}
                 line = "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
                 self.wfile.write(line.encode("utf-8"))
@@ -254,10 +288,40 @@ class Handler(BaseHTTPRequestHandler):
             return  # ブラウザを閉じただけ。演奏は続ける
 
 
+def _local_ips() -> list:
+    """このマシンのLAN側IPを全部集める(ループバック除く)。
+
+    標準ライブラリのみ。まず `hostname -I`(たいていのLinuxにある)を試し、
+    ダメなら「外向けソケットを開いて自分のアドレスを見る」定番の代替手段
+    (実際にパケットは送らない)を使う。
+    """
+    ips: set = set()
+    try:
+        out = subprocess.run(["hostname", "-I"], capture_output=True, text=True,
+                             timeout=2, check=False).stdout
+        ips.update(ip for ip in out.split() if ip and not ip.startswith("127."))
+    except Exception:  # noqa: BLE001
+        pass
+    if not ips:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                ips.add(s.getsockname()[0])
+            finally:
+                s.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return sorted(ips)
+
+
 # ---------------------------------------------------------------------
 def main() -> None:
     ap = argparse.ArgumentParser(description="PAM robot OC demo server")
-    ap.add_argument("--midi-dir", default=os.environ.get("OC_MIDI_DIR", "midi"))
+    # P2-1: 複数回指定できる（例: --midi-dir midi --midi-dir songs）。
+    # 省略時は OC_MIDI_DIR(カンマ区切り可) か "midi" 単体。
+    ap.add_argument("--midi-dir", dest="midi_dir", action="append", default=None,
+                    help="MIDI置き場。複数回指定可。省略時は 'midi'")
     ap.add_argument("--models-dir", default=os.environ.get("OC_MODELS_DIR", "models"))
     ap.add_argument("--port-name", default=os.environ.get("OC_SERIAL_PORT", "/dev/ttyUSB0"))
     ap.add_argument("--model", default=os.environ.get("OC_DEFAULT_MODEL"),
@@ -271,7 +335,12 @@ def main() -> None:
     ap.add_argument("--http-port", type=int, default=8080)
     args = ap.parse_args()
 
-    SETTINGS.midi_dir = Path(args.midi_dir)
+    if args.midi_dir:
+        midi_dirs = args.midi_dir
+    else:
+        env = os.environ.get("OC_MIDI_DIR", "midi")
+        midi_dirs = [d.strip() for d in env.split(",") if d.strip()]
+    SETTINGS.midi_dirs = [Path(d) for d in midi_dirs]
     SETTINGS.models_dir = Path(args.models_dir)
     SETTINGS.port_name = args.port_name
     SETTINGS.use_hardware = not args.mock
@@ -285,6 +354,13 @@ def main() -> None:
           f"mode={'MOCK' if args.mock else 'HARDWARE ' + args.port_name}"
           f"{'  [駆動なし検証モード]' if args.no_drive else ''}")
     print(f"[oc_demo] ブラウザで http://localhost:{args.http_port}/ を開いてください")
+    lan_ips = _local_ips()
+    if lan_ips:
+        print("[oc_demo] 同じLANの別PCからは:")
+        for ip in lan_ips:
+            print(f"[oc_demo]   http://{ip}:{args.http_port}/")
+    else:
+        print("[oc_demo] LAN側IPが取得できませんでした(オフライン環境?)")
     if SETTINGS.use_hardware and SETTINGS.default_model is None:
         print("[oc_demo] 警告: --model が未指定です。スクリプト動作（学習済みでない）になります")
 

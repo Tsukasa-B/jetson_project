@@ -52,11 +52,20 @@ class Score:
     nominal_bpm: float = 120.0
     duration: float = 0.0
     lanes: List[int] = field(default_factory=list)  # 使われているpitchの昇順
+    source: str = ""  # どの --midi-dir から来たか（P2-1: 複数ディレクトリ対応）
+
+    # ---- 識別子 --------------------------------------------------------
+    @property
+    def id(self) -> str:
+        """曲名がディレクトリ間で衝突しても一意になるID。API/URLで使う。"""
+        return f"{self.source}/{self.name}" if self.source else self.name
 
     # ---- 表示用 -------------------------------------------------------
     def to_dict(self) -> dict:
         return {
+            "id": self.id,
             "name": self.name,
+            "source": self.source,
             "path": self.path,
             "nominal_bpm": round(self.nominal_bpm, 2),
             "duration": round(self.duration, 3),
@@ -85,6 +94,7 @@ class Score:
             nominal_bpm=bpm,  # 再生後の実効BPM（obsの bpm/180 にはこちらを使う）
             duration=self.duration * k,
             lanes=list(self.lanes),
+            source=self.source,
         )
 
     # ---- 目標力軌道 ---------------------------------------------------
@@ -120,7 +130,7 @@ class Score:
 # ---------------------------------------------------------------------
 # MIDI読み込み
 # ---------------------------------------------------------------------
-def load_midi(path: str | Path, default_bpm: float = 120.0) -> Score:
+def load_midi(path: str | Path, default_bpm: float = 120.0, source: str = "") -> Score:
     """MIDIファイルを Score に変換する。
 
     note_on(velocity>0) を打点として拾う。テンポメタイベントから nominal_bpm を求める。
@@ -142,10 +152,11 @@ def load_midi(path: str | Path, default_bpm: float = 120.0) -> Score:
         nominal_bpm=float(nominal_bpm),
         duration=float(duration),
         lanes=lanes,
+        source=source,
     )
 
 
-def scan_midi_dir(directory: str | Path) -> List[Score]:
+def scan_midi_dir(directory: str | Path, source: str = "") -> List[Score]:
     """ディレクトリ内の .mid/.midi を全部読む。壊れたファイルは飛ばす。"""
     directory = Path(directory)
     out: List[Score] = []
@@ -155,7 +166,25 @@ def scan_midi_dir(directory: str | Path) -> List[Score]:
         if p.suffix.lower() not in (".mid", ".midi"):
             continue
         try:
-            out.append(load_midi(p))
+            out.append(load_midi(p, source=source or directory.name))
         except Exception as exc:  # noqa: BLE001
             print(f"[score] skip {p.name}: {exc}")
+    return out
+
+
+def scan_midi_dirs(directories: List[str | Path]) -> List[Score]:
+    """複数ディレクトリを走査する（P2-1: --midi-dir を複数指定できるようにする）。
+
+    曲名(name)がディレクトリをまたいで衝突しても Score.id は
+    "<ディレクトリ名>/<曲名>" で一意になる。同じ内容を2回読まないよう
+    ディレクトリの重複は無視する。
+    """
+    out: List[Score] = []
+    seen_dirs: set = set()
+    for d in directories:
+        dp = Path(d).resolve()
+        if dp in seen_dirs:
+            continue
+        seen_dirs.add(dp)
+        out.extend(scan_midi_dir(dp, source=dp.name))
     return out

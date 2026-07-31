@@ -15,107 +15,177 @@
     --df:#a78bfa; --f:#22d3ee; --g:#f0abfc;   /* 圧力3ch */
     --radius:14px;
   }
+  /* レイアウト方針(第2次修正: zoomをやめてrem方式に):
+     - 外枠(画面を縦に分割する部分。body の header/main 分割、
+       section.stage 内の rollwrap/strip 分割)は今までどおり
+       flex + vh/dvh のまま。画面の物理サイズにだけ追従させる。
+     - UI拡大率(--ui-scale)は html の font-size に効かせる
+       (html{font-size:calc(18px*var(--ui-scale))})。ボタン高さ・
+       パディング・文字サイズなど「中身」の寸法はすべて rem で書き、
+       この root font-size 経由で一括拡大される。
+       ★ zoom は 100vh/100dvh の実寸(物理px)まで拡大してしまうため
+       レイアウト全体が画面からはみ出す不具合があった。rem 方式なら
+       外枠は物理pxのまま固定され、中身だけが伸びる→伸びた分だけ
+       flex:1 の rollwrap(Canvas領域)が押し縮められる、という
+       「拡大率を上げると文字が大きくなり、余った高さをCanvasが譲る」
+       望ましい挙動になる。
+     - Canvas領域(.rollwrap)には min-height を敷いて潰れすぎを防ぐ。
+       それでも拡大率を上げすぎて min-height を割りそうな場合は
+       JS側(applyScale)で実効拡大率そのものを自動的に頭打ちにする。
+       現在の実効拡大率は #scaleIndicator に常時小さく表示する。
+     - 下部カードは「圧力3ch+関節角」を1枚に統合し、
+       「曲選択/START/STOP」「楽譜」「成績%」を優先して大きくし、
+       力の波形(Canvas下部)は薄い帯として残す(ROLL_RATIO調整、JS側)。 */
   *{box-sizing:border-box}
   html,body{height:100%}
+  html{
+    font-size:clamp(12.6px, calc(18px * var(--ui-scale, 1)), 36px);
+  }
   body{
     margin:0; background:var(--bg); color:var(--fg);
     font-family:"Hiragino Sans","Noto Sans JP",system-ui,-apple-system,sans-serif;
     -webkit-font-smoothing:antialiased; overflow:hidden;
+    display:flex; flex-direction:column;
+    height:100vh; height:100dvh;
+    font-size:1rem;
   }
+  /* ヘッダは優先度リストに入っていない(低優先度)ので、--ui-scaleに
+     追従させず常に固定px・コンパクトな高さのままにする。拡大率を上げた分の
+     余白は全部メイン側(曲選択/START/STOP/楽譜/成績)に回す。 */
   header{
-    display:flex; align-items:center; gap:16px; padding:14px 22px;
+    flex:none;
+    display:flex; align-items:center; gap:14px;
+    padding:9px 18px;
     border-bottom:1px solid var(--line); background:var(--panel);
   }
-  header h1{font-size:20px; margin:0; letter-spacing:.02em; font-weight:700}
-  header .sub{color:var(--muted); font-size:13px}
+  header h1{font-size:16px; margin:0; letter-spacing:.02em; font-weight:700; white-space:nowrap}
+  header .sub{color:var(--muted); font-size:12px; white-space:nowrap}
   .spacer{flex:1}
+  #scaleIndicator{color:var(--muted); font-size:11px; white-space:nowrap; font-variant-numeric:tabular-nums}
   .badge{
-    font-size:12px; font-weight:700; padding:5px 11px; border-radius:999px;
-    border:1px solid var(--line); color:var(--muted); letter-spacing:.06em;
+    font-size:11px; font-weight:700; padding:5px 11px; border-radius:999px;
+    border:1px solid var(--line); color:var(--muted); letter-spacing:.06em; white-space:nowrap;
   }
   .badge.mock{color:#fbbf24; border-color:#5a4a1c; background:#291f08}
   .badge.hw{color:#34d399; border-color:#1c4a37; background:#082018}
 
-  main{display:grid; grid-template-columns:300px 1fr; height:calc(100vh - 61px)}
+  main{
+    display:grid; grid-template-columns:clamp(280px,24vw,380px) 1fr;
+    flex:1 1 auto; min-height:0;
+  }
+  /* STOPは常時見える必要がある(緊急停止)。曲数が多い/拡大率が高いと
+     曲リストだけで aside の高さを超えることがあるため、スクロールする
+     領域(.songsScroll)と常に画面内に固定する領域(.asideFixed。
+     BPM・START・STOP)を分離する。曲が何曲あっても、拡大率をいくつに
+     しても、STOPだけは絶対に画面外へ押し出されない構造。 */
   aside{
     background:var(--panel); border-right:1px solid var(--line);
-    padding:18px; overflow-y:auto; display:flex; flex-direction:column; gap:18px;
+    display:flex; flex-direction:column; min-height:0; overflow:hidden;
   }
-  .lbl{font-size:12px; color:var(--muted); letter-spacing:.08em; font-weight:700; margin-bottom:9px}
+  .songsScroll{flex:1 1 auto; min-height:0; overflow-y:auto; padding:0.9rem 0.9rem 0.5rem}
+  .asideFixed{flex:none; padding:0.5rem 0.9rem 0.9rem; display:flex; flex-direction:column; gap:0.7rem}
+  .lbl{font-size:0.68rem; color:var(--muted); letter-spacing:.08em; font-weight:700; margin-bottom:0.5rem}
 
-  .songs{display:flex; flex-direction:column; gap:8px}
+  /* 優先度1: 曲選択・START・STOPは会場後方からでも迷わず押せる大きさにする */
+  .songs{display:flex; flex-direction:column; gap:0.4rem}
   .song{
-    text-align:left; cursor:pointer; padding:13px 15px; border-radius:var(--radius);
+    text-align:left; cursor:pointer; padding:0.8rem 1rem; border-radius:var(--radius);
     background:var(--panel2); border:2px solid transparent; color:var(--fg);
-    font-size:16px; font-weight:600; transition:.12s; font-family:inherit;
+    font-size:1.15rem; font-weight:600; transition:.12s; font-family:inherit;
   }
   .song:hover{border-color:#33465f}
   .song.sel{border-color:var(--target); background:#0d2b3d}
-  .song small{display:block; color:var(--muted); font-weight:400; font-size:12px; margin-top:3px}
+  .song:disabled{opacity:.45; cursor:not-allowed}
+  input[type=range]:disabled{opacity:.45; cursor:not-allowed}
+  .song small{display:block; color:var(--muted); font-weight:400; font-size:0.72rem; margin-top:0.2rem}
 
-  .bpmrow{display:flex; align-items:baseline; gap:9px; margin-bottom:6px}
-  .bpmval{font-size:32px; font-weight:800; font-variant-numeric:tabular-nums}
-  .bpmunit{color:var(--muted); font-size:13px}
-  input[type=range]{width:100%; accent-color:var(--target); height:30px}
-  .bpmhint{color:var(--muted); font-size:11.5px; margin-top:2px}
+  .bpmrow{display:flex; align-items:baseline; gap:0.5rem; margin-bottom:0.3rem}
+  .bpmval{font-size:1.9rem; font-weight:800; font-variant-numeric:tabular-nums}
+  .bpmunit{color:var(--muted); font-size:0.78rem}
+  input[type=range]{width:100%; accent-color:var(--target); height:1.7rem}
+  .bpmhint{color:var(--muted); font-size:0.68rem; margin-top:0.1rem}
 
   .btn{
-    width:100%; padding:18px; border-radius:var(--radius); border:none; cursor:pointer;
-    font-size:20px; font-weight:800; font-family:inherit; letter-spacing:.05em; transition:.12s;
+    width:100%; border-radius:var(--radius); border:none; cursor:pointer;
+    font-weight:800; font-family:inherit; letter-spacing:.05em; transition:.12s;
   }
-  .btn.start{background:var(--good); color:#04120c}
+  .btn.start{
+    background:var(--good); color:#04120c;
+    padding:1.35rem 1rem; font-size:1.6rem; line-height:1.15;
+  }
   .btn.start:hover{filter:brightness(1.08)}
   .btn.start:disabled{background:#2b3543; color:#5d6b7d; cursor:not-allowed}
-  .btn.stop{background:#3a1f22; color:#fca5a5; border:2px solid #7f2c2c; font-size:16px; padding:14px}
+  .btn.stop{
+    background:#3a1f22; color:#fca5a5; border:2px solid #7f2c2c;
+    font-size:0.95rem; padding:0.75rem 1rem;
+    flex:none;  /* aside内でスクロールが起きても常に確保したい安全ボタン */
+  }
   .btn.stop:hover{background:#4d2429}
 
-  section.stage{display:flex; flex-direction:column; padding:14px 18px 16px; gap:12px; min-width:0}
-  .rollwrap{position:relative; flex:1; min-height:0; background:var(--panel);
+  section.stage{
+    display:flex; flex-direction:column; min-width:0; min-height:0;
+    padding:0.6rem 0.9rem;
+    gap:0.55rem;
+  }
+  /* 優先度2/4/5: 楽譜(音符)と再生位置を大きく見せ、力の波形は下の薄い帯にする
+     (ROLL_RATIOはJS側/draw()参照)。
+     Canvas領域(このrollwrap)は画面の45〜55%程度に収める指示のため、
+     flex:1で天井なしに伸ばすのではなく max-height で頭打ちにし、
+     余った高さは同じくflexである.stripに回す(下部カードが数値の読みやすい
+     ゆったりしたカードになる)。それでもmin-heightで下限は確保する。 */
+  .rollwrap{position:relative; flex:1 1 auto; min-height:140px; max-height:52vh; background:var(--panel);
             border:1px solid var(--line); border-radius:var(--radius); overflow:hidden}
   canvas{display:block; width:100%; height:100%}
   .overlay{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-    flex-direction:column; gap:10px; pointer-events:none;
+    flex-direction:column; gap:0.6rem; pointer-events:none;
   }
-  .bigmsg{font-size:44px; font-weight:800; letter-spacing:.04em;
-          text-shadow:0 4px 24px rgba(0,0,0,.6)}
-  .submsg{color:var(--muted); font-size:15px}
+  .bigmsg{font-size:2.2rem; font-weight:800; letter-spacing:.04em;
+          text-shadow:0 4px 24px rgba(0,0,0,.6); text-align:center; padding:0 1rem}
+  .submsg{color:var(--muted); font-size:0.85rem; text-align:center; padding:0 1rem}
 
-  .strip{display:grid; grid-template-columns:1.25fr 1fr 1fr; gap:12px; height:132px}
+  /* 下部カード。圧力3ch+関節角は1枚に統合(数値が読めれば十分/優先度低)、
+     成績%は優先度3として大きく取る。常に見えていることを最優先にする
+     (固定px禁止、flex:0 0 autoでrem駆動の自然な高さを確保)。 */
+  .strip{
+    display:grid; grid-template-columns:1.3fr 1fr; gap:0.6rem;
+    flex:1 1 auto; min-height:0;
+  }
   .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
-        padding:11px 14px; display:flex; flex-direction:column; min-width:0}
-  .card h3{margin:0 0 9px; font-size:11.5px; color:var(--muted); letter-spacing:.08em; font-weight:700}
-  .bars{display:flex; flex-direction:column; gap:9px; flex:1; justify-content:center}
-  .bar{display:grid; grid-template-columns:34px 1fr 58px; align-items:center; gap:9px; font-size:12px}
+        padding:0.7rem 0.9rem; display:flex; flex-direction:column; min-width:0; min-height:0}
+  .card h3{margin:0 0 0.5rem; font-size:0.9rem; color:var(--muted); letter-spacing:.04em; font-weight:700}
+  .monogrid{display:flex; gap:1.2rem; flex:1; min-height:0}
+  .bars{display:flex; flex-direction:column; gap:0.5rem; flex:1.15; justify-content:center; min-height:0; min-width:0}
+  .bar{display:grid; grid-template-columns:2.2rem 1fr 3.6rem; align-items:center; gap:0.6rem; font-size:0.9rem}
   .bar .nm{color:var(--muted); font-weight:700}
-  .track{height:11px; background:#0b1017; border-radius:6px; position:relative; overflow:hidden}
+  .track{height:0.7rem; background:#0b1017; border-radius:6px; position:relative; overflow:hidden}
   .fill{position:absolute; inset:0 auto 0 0; width:0; border-radius:6px; transition:width .05s linear}
   .ghost{position:absolute; top:0; bottom:0; width:2px; background:#ffffff88}
   .val{text-align:right; font-variant-numeric:tabular-nums; color:var(--fg)}
-  .gauges{display:flex; flex-direction:column; gap:12px; flex:1; justify-content:center}
-  .metric{display:flex; align-items:baseline; gap:7px}
-  .metric .k{color:var(--muted); font-size:12px; width:64px}
-  .metric .v{font-size:24px; font-weight:800; font-variant-numeric:tabular-nums}
-  .metric .u{color:var(--muted); font-size:12px}
+  .gauges{display:flex; flex-direction:column; gap:0.5rem; flex:1; justify-content:center; min-height:0; min-width:0}
+  .metric{display:flex; align-items:baseline; gap:0.5rem}
+  .metric .k{color:var(--muted); font-size:0.9rem; width:3.8rem}
+  .metric .v{font-size:1.4rem; font-weight:800; font-variant-numeric:tabular-nums}
+  .metric .u{color:var(--muted); font-size:0.82rem}
   .scorebox{align-items:center; justify-content:center; text-align:center}
-  .bignum{font-size:42px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1}
-  .scorebox .sub{color:var(--muted); font-size:12px; margin-top:5px}
+  .bignum{font-size:3.6rem; font-weight:800; font-variant-numeric:tabular-nums; line-height:1}
+  .scorebox .sub{color:var(--muted); font-size:0.9rem; margin-top:0.4rem}
 
-  .legend{display:flex; gap:14px; font-size:11.5px; color:var(--muted); align-items:center}
-  .dot{width:9px; height:9px; border-radius:3px; display:inline-block; margin-right:5px;
+  .legend{display:flex; gap:0.8rem; font-size:0.72rem; color:var(--muted); align-items:center; white-space:nowrap}
+  .dot{width:0.55rem; height:0.55rem; border-radius:3px; display:inline-block; margin-right:0.3rem;
        vertical-align:middle}
 
-  /* 幅の狭い画面（ノートPC・タブレット）では凡例を隠し、パネルを2列に */
+  /* 幅の狭い画面（ノートPC・タブレット）では凡例を隠し、サイドバーを狭く。
+     優先度の低いもの(説明文・凡例)から間引く方針。 */
   @media (max-width:1180px){
     header .sub, .legend{display:none}
-    main{grid-template-columns:250px 1fr}
-    .strip{grid-template-columns:1fr 1fr; height:150px}
-    .strip .card:nth-child(3){grid-column:1 / -1; height:auto}
   }
-  @media (max-height:720px){
-    .strip{height:112px}
-    .bignum{font-size:32px}
-    .btn{padding:13px; font-size:17px}
+  @media (max-width:900px){
+    main{grid-template-columns:clamp(220px,30vw,300px) 1fr}
+  }
+  /* 縦に極端に狭い(横長プロジェクタ等)場合はヘッダの説明も削って高さを稼ぐ */
+  @media (max-height:640px){
+    header .sub, .legend{display:none}
   }
 </style>
 </head>
@@ -129,28 +199,31 @@
     <span><i class="dot" style="background:var(--actual)"></i>実際に出た力</span>
     <span><i class="dot" style="background:var(--good)"></i>±30ms 成功</span>
   </span>
+  <span id="scaleIndicator">拡大 100%</span>
   <span id="badge" class="badge">接続中…</span>
 </header>
 
 <main>
   <aside>
-    <div>
+    <div class="songsScroll">
       <div class="lbl">きょくを えらぶ</div>
       <div class="songs" id="songs"></div>
     </div>
 
-    <div>
-      <div class="lbl">テンポ</div>
-      <div class="bpmrow"><span class="bpmval" id="bpmval">120</span><span class="bpmunit">BPM</span></div>
-      <input type="range" id="bpm" min="60" max="180" step="1" value="120" />
-      <div class="bpmhint" id="bpmhint">楽譜どおり</div>
-    </div>
+    <div class="asideFixed">
+      <div>
+        <div class="lbl">テンポ</div>
+        <div class="bpmrow"><span class="bpmval" id="bpmval">120</span><span class="bpmunit">BPM</span></div>
+        <input type="range" id="bpm" min="60" max="180" step="1" value="120" />
+        <div class="bpmhint" id="bpmhint">楽譜どおり</div>
+      </div>
 
-    <button class="btn start" id="start" disabled>▶ スタート</button>
-    <button class="btn stop" id="stop">■ ストップ（緊急停止）</button>
+      <button class="btn start" id="start" disabled>▶ スタート</button>
+      <button class="btn stop" id="stop">■ ストップ（緊急停止）</button>
 
-    <div style="color:var(--muted); font-size:11px; line-height:1.7">
-      <div id="infoline">—</div>
+      <div style="color:var(--muted); font-size:11px; line-height:1.7">
+        <div id="infoline">—</div>
+      </div>
     </div>
   </aside>
 
@@ -165,26 +238,24 @@
 
     <div class="strip">
       <div class="card">
-        <h3>空気圧シリンダ 指令 / 実測 [MPa]</h3>
-        <div class="bars">
-          <div class="bar"><span class="nm" style="color:var(--df)">DF</span>
-            <span class="track"><i class="fill" id="f0" style="background:var(--df)"></i><i class="ghost" id="g0"></i></span>
-            <span class="val" id="v0">0.000</span></div>
-          <div class="bar"><span class="nm" style="color:var(--f)">F</span>
-            <span class="track"><i class="fill" id="f1" style="background:var(--f)"></i><i class="ghost" id="g1"></i></span>
-            <span class="val" id="v1">0.000</span></div>
-          <div class="bar"><span class="nm" style="color:var(--g)">G</span>
-            <span class="track"><i class="fill" id="f2" style="background:var(--g)"></i><i class="ghost" id="g2"></i></span>
-            <span class="val" id="v2">0.000</span></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>関節角</h3>
-        <div class="gauges">
-          <div class="metric"><span class="k">手首</span><span class="v" id="wrist">0.0</span><span class="u">deg</span></div>
-          <div class="metric"><span class="k">グリップ</span><span class="v" id="grip">0.0</span><span class="u">deg</span></div>
-          <div class="metric"><span class="k">力センサ</span><span class="v" id="force" style="color:var(--actual)">0.0</span><span class="u">N</span></div>
+        <h3>空気圧シリンダ 指令/実測 [MPa] ・ 関節角 [deg]</h3>
+        <div class="monogrid">
+          <div class="bars">
+            <div class="bar"><span class="nm" style="color:var(--df)">DF</span>
+              <span class="track"><i class="fill" id="f0" style="background:var(--df)"></i><i class="ghost" id="g0"></i></span>
+              <span class="val" id="v0">0.000</span></div>
+            <div class="bar"><span class="nm" style="color:var(--f)">F</span>
+              <span class="track"><i class="fill" id="f1" style="background:var(--f)"></i><i class="ghost" id="g1"></i></span>
+              <span class="val" id="v1">0.000</span></div>
+            <div class="bar"><span class="nm" style="color:var(--g)">G</span>
+              <span class="track"><i class="fill" id="f2" style="background:var(--g)"></i><i class="ghost" id="g2"></i></span>
+              <span class="val" id="v2">0.000</span></div>
+          </div>
+          <div class="gauges">
+            <div class="metric"><span class="k">手首</span><span class="v" id="wrist">0.0</span><span class="u">deg</span></div>
+            <div class="metric"><span class="k">グリップ</span><span class="v" id="grip">0.0</span><span class="u">deg</span></div>
+            <div class="metric"><span class="k">力センサ</span><span class="v" id="force" style="color:var(--actual)">0.0</span><span class="u">N</span></div>
+          </div>
         </div>
       </div>
 
@@ -201,26 +272,104 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 
+// ---------- UI拡大率 ----------
+// 会場後方からでも読めるように、2通りの手段で --ui-scale (CSS変数。
+// html{font-size:calc(18px*var(--ui-scale,1))}、中身のrem寸法が追従する)
+// を変える。
+//   1. URL: ?scale=1.3 … kiosk起動時の基準値をコマンドに埋め込んで固定する用
+//   2. キー: Alt+/Alt-/Alt0 … 会場で気づいたときにその場で即調整する用
+// (どちらか片方ではなく両方、という判断で実装。README参照)
+//
+// zoomではなくremにしたのは、zoomだと100vh/100dvhの実寸(物理px)まで
+// 一緒に拡大されてしまいレイアウト全体が画面からはみ出す不具合があったため。
+// remなら外枠(flex+vh)は物理pxのまま、中身の文字・パディングだけが伸びる
+// →伸びた分だけ flex:1 の Canvas領域(.rollwrap)が押し縮められる、という
+// 望ましい挙動になる。ただし縮められすぎるとCanvasが潰れるため、
+// .rollwrap の min-height を実測してそれを割り込みそうな場合は
+// 拡大率そのものを自動的に頭打ちにする(applyScaleのrAF内ループ)。
+const SCALE_MIN = 0.7, SCALE_MAX = 2.0, SCALE_STEP = 0.1;
+let _scale = 1.0;
+
+function setScaleVar(s) {
+  document.documentElement.style.setProperty("--ui-scale", String(s));
+}
+
+function applyScale(v, showToast = true) {
+  let s = Math.min(SCALE_MAX, Math.max(SCALE_MIN, v));
+  setScaleVar(s);
+  // レイアウト確定後に (1) Canvas領域(.rollwrap)が潰れすぎていないか、
+  // (2) STOPボタンを含む.asideFixed(BPM/START/STOP)が画面からはみ出して
+  // いないかを確認し、はみ出す場合は入るところまで自動で拡大率を下げる。
+  // 曲リスト(.songsScroll)は自前でスクロールするので対象外(何曲・
+  // どれだけ拡大されていても、STOPだけは絶対に画面外に出ない設計)。
+  requestAnimationFrame(() => {
+    const wrap = document.querySelector(".rollwrap");
+    const fixedBlock = document.querySelector(".asideFixed");
+    const minH = Math.max(140, window.innerHeight * 0.28);
+    const fits = () =>
+      wrap.getBoundingClientRect().height >= minH - 1 &&
+      fixedBlock.getBoundingClientRect().bottom <= window.innerHeight + 1;
+    let guard = 0;
+    while (!fits() && s > SCALE_MIN && guard < 30) {
+      s = Math.max(SCALE_MIN, +(s - 0.05).toFixed(2));
+      setScaleVar(s);
+      guard++;
+    }
+    _scale = s;
+    $("scaleIndicator").textContent = `拡大 ${Math.round(s * 100)}%`;
+    if (showToast) scaleToast(s);
+  });
+  return s;
+}
+
+let _scaleToastTimer = null;
+function scaleToast(s) {
+  let el = document.getElementById("scaleToast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "scaleToast";
+    el.style.cssText = "position:fixed;top:14px;right:14px;background:#141a24;" +
+      "border:1px solid #26303f;color:#e8eef7;padding:8px 14px;border-radius:10px;" +
+      "font-size:14px;font-weight:700;z-index:9999;opacity:0;transition:opacity .15s;" +
+      "pointer-events:none";
+    document.body.appendChild(el);
+  }
+  el.textContent = `拡大 ${Math.round(s * 100)}%`;
+  el.style.opacity = "1";
+  clearTimeout(_scaleToastTimer);
+  _scaleToastTimer = setTimeout(() => { el.style.opacity = "0"; }, 1200);
+}
+
+(function initScale() {
+  const q = parseFloat(new URLSearchParams(location.search).get("scale"));
+  applyScale(isFinite(q) && q > 0 ? q : 1.0, false);
+})();
+
+window.addEventListener("keydown", (e) => {
+  if (!e.altKey) return;
+  if (e.key === "=" || e.key === "+") { applyScale(_scale + SCALE_STEP); e.preventDefault(); }
+  else if (e.key === "-" || e.key === "_") { applyScale(_scale - SCALE_STEP); e.preventDefault(); }
+  else if (e.key === "0") { applyScale(1.0); e.preventDefault(); }
+});
+window.addEventListener("resize", () => applyScale(_scale, false));
+
 const S = {
   songs: [], sel: null, bpm: 120, nominalBpm: 120,
   score: null,            // {notes:[{t,p,v,d}], duration, lanes}
+  notation: [],           // buildNotation()の結果。打楽器譜(1本線)の描画用
   samples: [], hits: [],
+  subforce: [],           // [[t, force_N], ...] 200Hz相当。50Hzサンプルの間に
+                          // 隠れる打撃スパイクも見えるよう波形描画はこちらを使う
   state: "idle", info: {}, hw: false, drive: true, runId: null,
   lastT: 0, lastWall: 0, playT: 0,
   maxTarget: 1,
 };
 
 const PAST = 2.2, FUTURE = 5.5;    // 画面に映す時間窓[s]
-const ROLL_RATIO = 0.46;           // キャンバス上部のうち譜面が占める割合
-
-// GM ドラムマップ（よく使うものだけ）。分からない番号は「音 nn」と出す
-const DRUM_NAMES = {
-  35: "バスドラム", 36: "バスドラム", 37: "リムショット", 38: "スネア", 40: "スネア",
-  41: "タム(低)", 42: "ハイハット", 43: "タム(低)", 44: "ハイハット(踏)",
-  45: "タム(中)", 46: "オープンハイハット", 47: "タム(中)", 48: "タム(高)",
-  49: "クラッシュ", 50: "タム(高)", 51: "ライド", 53: "ライドベル", 57: "クラッシュ2",
-};
-const laneName = (p) => DRUM_NAMES[p] || `音 ${p}`;
+// 優先度2/4を上げ5を下げる方針(楽譜・再生位置を大きく、力波形は下の薄い帯に)。
+// 力波形は「研究っぽさの演出」程度でよいとの指示のため、以前の0.46から
+// 0.68に上げ、力波形の取り分を残り32%まで縮めた。
+const ROLL_RATIO = 0.68;           // キャンバス上部のうち楽譜が占める割合
 
 // ---------- API ----------
 async function boot() {
@@ -240,6 +389,12 @@ async function boot() {
   requestAnimationFrame(draw);
 }
 
+// P0-2: 演奏中(arming/running)はBPM・曲を変えても実際の演奏には反映されない
+// (Runner起動時に固定される)。表示と実態が食い違わないよう、演奏中は
+// 曲ボタンとBPMスライダーそのものを操作不能にする。STOPだけは常に押せる。
+const isBusy = () => S.state === "arming" || S.state === "running";
+
+// P2-1: 曲は出どころ(--midi-dirごと)でグループ分けして表示する
 function renderSongs() {
   const box = $("songs");
   box.innerHTML = "";
@@ -247,17 +402,34 @@ function renderSongs() {
     box.innerHTML = '<div style="color:var(--muted);font-size:13px">MIDIが見つかりません</div>';
     return;
   }
-  S.songs.forEach((s) => {
-    const el = document.createElement("button");
-    el.className = "song" + (S.sel === s.name ? " sel" : "");
-    el.innerHTML = `${s.label || s.name}<small>${s.n_notes} 打 · ${s.duration.toFixed(1)} 秒 · 元 ${s.nominal_bpm} BPM</small>`;
-    el.onclick = () => selectSong(s);
-    box.appendChild(el);
-  });
+  const busy = isBusy();
+  const groups = new Map();
+  for (const s of S.songs) {
+    if (!groups.has(s.source)) groups.set(s.source, []);
+    groups.get(s.source).push(s);
+  }
+  for (const [src, list] of groups) {
+    if (groups.size > 1) {
+      const h = document.createElement("div");
+      h.className = "lbl";
+      h.style.marginTop = "4px";
+      h.textContent = src || "(root)";
+      box.appendChild(h);
+    }
+    list.forEach((s) => {
+      const el = document.createElement("button");
+      el.className = "song" + (S.sel === s.id ? " sel" : "");
+      el.disabled = busy;
+      el.innerHTML = `${s.label || s.name}<small>${s.n_notes} 打 · ${s.duration.toFixed(1)} 秒 · 元 ${s.nominal_bpm} BPM</small>`;
+      el.onclick = () => selectSong(s);
+      box.appendChild(el);
+    });
+  }
 }
 
 async function selectSong(s) {
-  S.sel = s.name;
+  if (isBusy()) return;  // 演奏中は曲を切り替えても実演奏には反映されないため無視
+  S.sel = s.id;
   S.nominalBpm = s.nominal_bpm;
   $("bpm").value = Math.round(s.nominal_bpm);
   S.bpm = Math.round(s.nominal_bpm);
@@ -265,20 +437,22 @@ async function selectSong(s) {
   updateBpmHint();
   renderSongs();
   $("start").disabled = false;
-  S.score = await (await fetch(`/api/song/${encodeURIComponent(s.name)}?bpm=${S.bpm}`)).json();
+  S.score = await (await fetch(`/api/song/${encodeURIComponent(s.id)}?bpm=${S.bpm}`)).json();
   S.maxTarget = Math.max(...(S.score.target || [1]), 1);
-  S.samples = []; S.hits = []; S.playT = 0;
+  S.notation = buildNotation(S.score.notes, S.bpm);
+  S.samples = []; S.subforce = []; S.hits = []; S.playT = 0;
   showOverlay("スタートを おしてね", `${s.label || s.name} · ${S.bpm} BPM`);
 }
 
 async function syncTo(song, bpm) {
-  const s = S.songs.find((x) => x.name === song);
+  const s = S.songs.find((x) => x.id === song);
   S.sel = song; S.bpm = Math.round(bpm);
   if (s) S.nominalBpm = s.nominal_bpm;
   $("bpm").value = S.bpm; $("bpmval").textContent = S.bpm;
   updateBpmHint(); renderSongs(); $("start").disabled = false;
   S.score = await (await fetch(`/api/song/${encodeURIComponent(song)}?bpm=${S.bpm}`)).json();
   S.maxTarget = Math.max(...(S.score.target || [1]), 1);
+  S.notation = buildNotation(S.score.notes, S.bpm);
 }
 
 function updateBpmHint() {
@@ -288,18 +462,20 @@ function updateBpmHint() {
 }
 
 $("bpm").oninput = async (e) => {
+  if (isBusy()) { e.target.value = S.bpm; return; }  // 演奏中は無視(念のための二重ガード)
   S.bpm = +e.target.value;
   $("bpmval").textContent = S.bpm;
   updateBpmHint();
   if (S.sel) {
     S.score = await (await fetch(`/api/song/${encodeURIComponent(S.sel)}?bpm=${S.bpm}`)).json();
   S.maxTarget = Math.max(...(S.score.target || [1]), 1);
+  S.notation = buildNotation(S.score.notes, S.bpm);
   }
 };
 
 $("start").onclick = async () => {
   if (!S.sel) return;
-  S.samples = []; S.hits = []; S.playT = 0; S.lastT = 0;
+  S.samples = []; S.subforce = []; S.hits = []; S.playT = 0; S.lastT = 0;
   const r = await fetch("/api/start", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({song: S.sel, bpm: S.bpm}),
@@ -308,6 +484,7 @@ $("start").onclick = async () => {
   const j = await r.json();
   S.score = j.score;
   S.maxTarget = Math.max(...(S.score.target || [1]), 1);
+  S.notation = buildNotation(S.score.notes, S.bpm);
   hideOverlay();
 };
 
@@ -322,7 +499,8 @@ function connectStream() {
     const m = JSON.parse(ev.data);
     if (m.type !== "tick") return;
     if (m.run_id !== undefined && m.run_id !== S.runId) {
-      S.runId = m.run_id; S.samples = []; S.hits = []; S.playT = 0; S.lastT = 0;
+      S.runId = m.run_id; S.samples = []; S.subforce = []; S.hits = [];
+      S.playT = 0; S.lastT = 0;
       // 別の画面から開始された場合でも、この画面が譜面を追いかけられるようにする
       if (m.song && (S.sel !== m.song || S.bpm !== m.bpm)) syncTo(m.song, m.bpm);
     }
@@ -332,6 +510,10 @@ function connectStream() {
       S.lastT = m.s[m.s.length - 1][0];
       S.lastWall = performance.now() / 1000;
     }
+    if (m.sf && m.sf.length) {
+      for (const row of m.sf) S.subforce.push(row);
+      if (S.subforce.length > 160000) S.subforce.splice(0, S.subforce.length - 160000);
+    }
     S.hits = m.hits || [];
     S.state = m.state; S.info = m.info || {};
     updateStats(m);
@@ -339,7 +521,15 @@ function connectStream() {
   es.onerror = () => { /* EventSource が自動再接続する */ };
 }
 
+let _wasBusy = false;
 function updateStats(m) {
+  // P0-2: 演奏中はBPMスライダー・曲選択を操作不能にする（表示と実演奏の
+  // テンポ食い違いを防ぐ）。STOPボタンは常に有効のまま。
+  const busy = isBusy();
+  $("bpm").disabled = busy;
+  $("start").disabled = busy || !S.sel;
+  if (busy !== _wasBusy) { _wasBusy = busy; renderSongs(); }
+
   const last = S.samples[S.samples.length - 1];
   if (last) {
     for (let i = 0; i < 3; i++) {
@@ -401,6 +591,159 @@ function fit() {
 }
 window.addEventListener("resize", fit);
 
+// ---------- 楽譜（1本線の打楽器譜） ----------
+// P2-3: 打楽器なので五線譜ではなく1本線。打点間隔から音価(4分/8分/16分/3連)を
+// 推定して量子化し、音符(玉+符幹+連桁/旗)と休符を並べる。BPMが変わるたびに
+// (S.bpm更新のたびに)呼び直すので追従する。
+// 指定は4分/8分/16分/3連の4種類。それより長い音価はここでは扱わない
+// (例えば2拍あく四分打ちパターンは「四分音符+四分休符」として量子化される)。
+const NOTE_VALUES = [["trip", 1 / 3], ["16th", 0.25], ["8th", 0.5], ["quarter", 1]];
+const REST_VALUES = [["quarter", 1], ["8th", 0.5], ["16th", 0.25]];
+
+function nearestValue(ratio, table) {
+  let best = table[0][0], bestErr = Infinity;
+  for (const [name, r] of table) {
+    const err = Math.abs(ratio - r);
+    if (err < bestErr) { bestErr = err; best = name; }
+  }
+  return best;
+}
+
+function buildNotation(notes, bpm) {
+  const beat = 60 / (bpm || 120);
+  const times = [...notes].map((n) => n.t).sort((a, b) => a - b);
+  const VAL = { trip: 1 / 3, "16th": 0.25, "8th": 0.5, quarter: 1 };
+  const evts = [];
+  for (let i = 0; i < times.length; i++) {
+    const t = times[i];
+    const gap = i + 1 < times.length ? times[i + 1] - t : beat;
+    const durName = nearestValue(gap / beat, NOTE_VALUES);
+    // 実際の間隔より量子化後の音価が長くなる場合(例: ダブルストロークのような
+    // 規則的な拍子に乗らない特殊パターン)は間隔を超えないようクランプする
+    const dur = Math.min(VAL[durName] * beat, gap);
+    evts.push({ t, dur, kind: "note", durName });
+    // 次の音符までの残り時間を休符で埋める(3連休符は複雑になるので4分/8分/16分のみ)
+    let remain = gap - dur, cursor = t + dur, guard = 0;
+    while (remain > beat * 0.08 && guard < 12) {
+      guard++;
+      const restName = REST_VALUES.find(([, r]) => r * beat <= remain + beat * 0.05);
+      if (!restName) break;
+      const d = restName[1] * beat;
+      evts.push({ t: cursor, dur: d, kind: "rest", durName: restName[0] });
+      cursor += d; remain -= d;
+    }
+  }
+  // 連桁(ビーム): 同じ拍の中で連続する8分/16分の note を1グループにする
+  const t0ref = times.length ? times[0] : 0;
+  let group = [];
+  const flush = () => {
+    if (group.length > 1) for (const e of group) e.beamGroup = group;
+    group = [];
+  };
+  for (const e of evts) {
+    const isBeamable = e.kind === "note" && (e.durName === "8th" || e.durName === "16th");
+    const beatIdx = Math.floor((e.t - t0ref) / beat + 1e-6);
+    if (isBeamable && group.length && group[0]._beatIdx === beatIdx
+        && group[0].durName === e.durName) {
+      e._beatIdx = beatIdx; group.push(e);
+    } else {
+      flush();
+      if (isBeamable) { e._beatIdx = beatIdx; group = [e]; }
+    }
+  }
+  flush();
+  return evts;
+}
+
+function drawNotation(ctx, x, t0, t1, rollH, W) {
+  const lineY = rollH * 0.55;                 // 1本線の高さ
+  const stemH = Math.min(rollH * 0.34, 30);   // 符幹の長さ
+  ctx.fillStyle = "#111823"; ctx.fillRect(0, 0, W, rollH);
+  ctx.strokeStyle = "#3a4a60"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, lineY + 0.5); ctx.lineTo(W, lineY + 0.5); ctx.stroke();
+
+  const evts = S.notation || [];
+  // ビームは先に描く(符幹の上に音符が重ならないよう)
+  const drawnBeams = new Set();
+  for (const e of evts) {
+    if (e.t + e.dur < t0 || e.t > t1) continue;
+    if (e.kind !== "note" || !e.beamGroup || drawnBeams.has(e.beamGroup)) continue;
+    drawnBeams.add(e.beamGroup);
+    const g = e.beamGroup;
+    const passed = g[g.length - 1].t <= S.playT;
+    ctx.strokeStyle = passed ? "rgba(56,189,248,.4)" : "#38bdf8";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x(g[0].t), lineY - stemH);
+    ctx.lineTo(x(g[g.length - 1].t), lineY - stemH);
+    ctx.stroke();
+    if (g[0].durName === "16th") {
+      ctx.beginPath();
+      ctx.moveTo(x(g[0].t), lineY - stemH + 6);
+      ctx.lineTo(x(g[g.length - 1].t), lineY - stemH + 6);
+      ctx.stroke();
+    }
+  }
+
+  for (const e of evts) {
+    if (e.t + e.dur < t0 || e.t > t1) continue;
+    const px = x(e.t);
+    const passed = e.t <= S.playT;
+    const near = Math.abs(e.t - S.playT) < 0.06 && e.kind === "note";
+    ctx.globalAlpha = passed ? 0.35 : 1;
+
+    if (e.kind === "rest") {
+      ctx.fillStyle = "#8b9bb0";
+      ctx.font = "600 15px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      const glyph = e.durName === "quarter" ? "𝄽" : e.durName === "8th" ? "𝄾" : "𝄿";
+      ctx.fillText(glyph, px, lineY - 8);
+      ctx.textBaseline = "alphabetic";
+      ctx.globalAlpha = 1;
+      continue;
+    }
+
+    // 符幹(すべて符頭から上向き)
+    if (!e.beamGroup) {
+      ctx.strokeStyle = near ? "#e0f2fe" : "#38bdf8";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath(); ctx.moveTo(px + 6, lineY - 2); ctx.lineTo(px + 6, lineY - stemH); ctx.stroke();
+      // 旗(8分=1本、16分=2本)。連桁の一部でなければ旗を描く
+      if (e.durName === "8th" || e.durName === "16th") {
+        ctx.beginPath();
+        ctx.moveTo(px + 6, lineY - stemH);
+        ctx.quadraticCurveTo(px + 16, lineY - stemH + 6, px + 6, lineY - stemH + 14);
+        ctx.stroke();
+        if (e.durName === "16th") {
+          ctx.beginPath();
+          ctx.moveTo(px + 6, lineY - stemH + 8);
+          ctx.quadraticCurveTo(px + 16, lineY - stemH + 14, px + 6, lineY - stemH + 22);
+          ctx.stroke();
+        }
+      }
+    } else {
+      ctx.strokeStyle = near ? "#e0f2fe" : "#38bdf8";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath(); ctx.moveTo(px + 6, lineY - 2); ctx.lineTo(px + 6, lineY - stemH); ctx.stroke();
+    }
+
+    // 符頭(3連符は三角、それ以外は楕円で塗りつぶし＝すべて短い打点なので"付点なし"扱い)
+    ctx.fillStyle = near ? "#e0f2fe" : "#38bdf8";
+    ctx.save();
+    ctx.translate(px, lineY);
+    ctx.rotate(-0.35);
+    ctx.beginPath(); ctx.ellipse(0, 0, 7, 5.2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    if (e.durName === "trip") {
+      ctx.fillStyle = "#0b0f16";
+      ctx.font = "700 9px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("3", px, lineY);
+      ctx.textBaseline = "alphabetic";
+    }
+    if (near) { ctx.shadowColor = "#7dd3fc"; ctx.shadowBlur = 22; ctx.fill(); ctx.shadowBlur = 0; }
+    ctx.globalAlpha = 1;
+  }
+}
+
 function draw() {
   const r = fit();
   const W = r.width, H = r.height;
@@ -425,49 +768,8 @@ function draw() {
     ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, H); ctx.stroke();
   }
 
-  // --- 譜面（ピアノロール） ---
-  const lanes = (S.score && S.score.lanes) || [];
-  const nL = Math.max(lanes.length, 1);
-  const laneH = Math.min(rollH / nL, 56);
-  const padTop = (rollH - laneH * nL) / 2;
-  const laneY = (pitch) => {
-    const i = lanes.indexOf(pitch);
-    return padTop + (nL - 1 - (i < 0 ? 0 : i)) * laneH;
-  };
-
-  for (let i = 0; i < nL; i++) {
-    if (i % 2 === 0) { ctx.fillStyle = "#111823"; ctx.fillRect(0, padTop + i * laneH, W, laneH); }
-  }
-  // レーン名（音符に重ならないよう背景を敷く）
-  if (lanes.length) {
-    ctx.font = "600 12px system-ui"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
-    lanes.forEach((p) => {
-      const label = laneName(p), cy = laneY(p) + laneH / 2;
-      const w = ctx.measureText(label).width;
-      ctx.fillStyle = "rgba(11,15,22,.88)";
-      roundRect(6, cy - 11, w + 16, 22, 6); ctx.fill();
-      ctx.fillStyle = "#8fa3ba";
-      ctx.fillText(label, 14, cy);
-    });
-    ctx.textBaseline = "alphabetic";
-  }
-
-  if (S.score) {
-    for (const n of S.score.notes) {
-      if (n.t > t1 || n.t + Math.max(n.d, 0.12) < t0) continue;
-      const px = x(n.t), py = laneY(n.p) + laneH * 0.18, hgt = laneH * 0.64;
-      const w = Math.max(x(n.t + Math.max(n.d, 0.09)) - px, 8);
-      const passed = n.t <= S.playT;
-      const near = Math.abs(n.t - S.playT) < 0.06;
-      ctx.globalAlpha = passed ? 0.35 : 1;
-      ctx.fillStyle = near ? "#e0f2fe" : "var(--target)";
-      ctx.fillStyle = near ? "#e0f2fe" : "#38bdf8";
-      roundRect(px, py, w, hgt, Math.min(hgt / 2, 7));
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      if (near) { ctx.shadowColor = "#7dd3fc"; ctx.shadowBlur = 22; ctx.fill(); ctx.shadowBlur = 0; }
-    }
-  }
+  // --- 楽譜（1本線の打楽器譜） ---
+  drawNotation(ctx, x, t0, t1, rollH, W);
 
   // --- 力の波形（目標 vs 実測） ---
   ctx.fillStyle = "#0e141d";
@@ -494,11 +796,13 @@ function draw() {
     }
   }
 
-  // 実測力: 起きたことだけ
-  const seg = S.samples.filter((s) => s[0] >= t0 && s[0] <= t1);
-  if (seg.length > 1) {
+  // 実測力: 起きたことだけ。50Hzの S.samples ではなく200Hz相当の S.subforce を
+  // つないで描く（P0-1: 50Hzの点だけだと幅10ms前後の打撃スパイクが線から
+  // 消えてしまう打・出ない打が生じていた）。
+  const fseg = S.subforce.filter((s) => s[0] >= t0 && s[0] <= t1);
+  if (fseg.length > 1) {
     ctx.beginPath();
-    seg.forEach((s, i) => (i ? ctx.lineTo(x(s[0]), fy(s[9])) : ctx.moveTo(x(s[0]), fy(s[9]))));
+    fseg.forEach((s, i) => (i ? ctx.lineTo(x(s[0]), fy(s[1])) : ctx.moveTo(x(s[0]), fy(s[1]))));
     ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2.2;
     ctx.lineJoin = "round"; ctx.stroke();
   }

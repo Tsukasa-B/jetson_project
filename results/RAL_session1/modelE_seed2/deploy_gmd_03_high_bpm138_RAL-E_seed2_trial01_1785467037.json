@@ -1,0 +1,31 @@
+{
+  "model_key": "RAL/E_seed2",
+  "model_label": "E: MLP+framestack(k=5), lookahead=0.5s",
+  "model_file": "models/RAL/modelE_seed2.onnx",
+  "arch": "mlp",
+  "lookahead_horizon": 0.5,
+  "lookahead_steps": 25,
+  "frame_stack": 5,
+  "obs_dim": 175,
+  "manifest_extra": {
+    "seed": 2,
+    "checkpoint": "model_1499.pt"
+  },
+  "midi": "songs/gmd_03_high_bpm138.mid",
+  "bpm": 137.99987580011177,
+  "trial": 1,
+  "control_dt": 0.02,
+  "p_max": 0.6,
+  "target_force": 20.0,
+  "qd_clip": 20.0,
+  "mock": false,
+  "verify": false,
+  "elapsed_sec": 29.881,
+  "packets_received": 5978,
+  "packets_expected_at_200hz": 5976,
+  "packet_yield": 1.0003,
+  "bytes_discarded_on_resync": 0,
+  "control_steps": 1494,
+  "git_rev": "f67add9",
+  "timestamp": "2026-07-31T03:03:57+0000"
+}

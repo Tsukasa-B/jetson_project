@@ -40,6 +40,17 @@ class Plant:
     def open(self) -> None: ...
     def write(self, pressures: np.ndarray) -> None: ...
     def read(self) -> Frame: ...
+
+    def read_burst(self) -> list[Frame]:
+        """前回このメソッドを呼んでから届いた全フレーム(古い順)。
+
+        obs には使わない(パリティ維持のため read() の最新1フレームだけを使う)。
+        テレメトリ・打点検出・力ゼロ点推定など「取りこぼしたくない」用途専用。
+        既定実装は read() を1個だけ返す(MockPlant等、受信と制御が同じレートの
+        Plantではこれで十分)。
+        """
+        return [self.read()]
+
     def close(self) -> None: ...
 
     @property
@@ -56,11 +67,15 @@ class SerialPlant(Plant):
     kind = "hardware"
     PACKET_LEN = 2 + 8 * adapter.RECV_FIELDS  # 58 byte
 
+    # 200Hz x 320ms分。制御ループが極端に遅延しない限り十分すぎる余裕。
+    BURST_CAP = 64
+
     def __init__(self, port: str = "/dev/ttyUSB0", baud: int = adapter.SERIAL_BAUD):
         self.port = port
         self.baud = baud
         self._ser = None
         self._latest = Frame()
+        self._burst: list[Frame] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -84,6 +99,8 @@ class SerialPlant(Plant):
             self._ser.reset_output_buffer()
         self._recv_count = 0
         self._bad_count = 0
+        with self._lock:
+            self._burst = []
 
     def _rx_loop(self) -> None:
         buf = bytearray()
@@ -124,6 +141,9 @@ class SerialPlant(Plant):
                 with self._lock:
                     self._latest = fr
                     self._recv_count += 1
+                    self._burst.append(fr)
+                    if len(self._burst) > self.BURST_CAP:
+                        del self._burst[: len(self._burst) - self.BURST_CAP]
 
     def write(self, pressures: np.ndarray) -> None:
         if self._ser is None:
@@ -134,6 +154,22 @@ class SerialPlant(Plant):
     def read(self) -> Frame:
         with self._lock:
             return self._latest
+
+    def read_burst(self) -> list[Frame]:
+        """前回の呼び出し以降に届いた全フレーム(古い順)。1個も無ければ最新値を1個返す。
+
+        受信は200Hz、制御ループは50Hzで read() を呼ぶだけだと、1制御ステップ
+        あたり平均4フレームのうち3フレームが読み捨てられる（P0-1で実測: FWHM
+        ~10msの打撃力スパイクは半分近くの確率でピークの半分以下しか
+        観測できない）。このメソッドはテレメトリ・打点検出・力ゼロ点推定用に
+        取りこぼし無く全フレームを渡す。obsの計算には使わないこと（read()の
+        1フレームのみを使うのがsrc/deploy_policy.pyとのパリティ条件）。
+        """
+        with self._lock:
+            frames = self._burst
+            self._burst = []
+            latest = self._latest
+        return frames if frames else [latest]
 
     def close(self) -> None:
         try:
