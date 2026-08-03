@@ -23,11 +23,19 @@ SENSOR_RATE_HZ = 200.0
 
 
 class SensorReceiver(threading.Thread):
-    """200Hzで届くパケットを取りこぼさず受信し、制御ループには最新1フレームを渡す。"""
+    """200Hzで届くパケットを取りこぼさず受信し、制御ループには最新1フレームを渡す。
 
-    def __init__(self, ser):
+    swap_encoders: MicroLabBox から届く角度2ch (payload[3], payload[4]) を入れ替える。
+        配線上 wrist joint と hand(grip) joint のエンコーダが逆に繋がっている場合に使う。
+        sim 側の観測は dof_names = ["Base_link_Wrist_joint", "Hand_link_Grip_joint"] の
+        順、すなわち obs[0]=wrist, obs[1]=grip なので、実機側がこの順で入っていないと
+        ポリシーは学習時と違う固有受容感覚を受け取ることになる。
+    """
+
+    def __init__(self, ser, swap_encoders: bool = False):
         super().__init__(daemon=True)
         self.ser = ser
+        self.swap_encoders = swap_encoders
         self.running = True
         self.latest = None
         self.logs: list[dict] = []
@@ -68,12 +76,13 @@ class SensorReceiver(threading.Thread):
             d = struct.unpack(RECV_FMT, payload)
         except struct.error:
             return
+        a_wrist, a_grip = (d[4], d[3]) if self.swap_encoders else (d[3], d[4])
         sample = {
             "meas_pres_DF": d[0],
             "meas_pres_F": d[1],
             "meas_pres_G": d[2],
-            "wrist_angle_deg": d[3],
-            "grip_angle_deg": d[4],
+            "wrist_angle_deg": a_wrist,
+            "grip_angle_deg": a_grip,
             "flag": d[5],
             "force_N": d[6],
             "t_recv": time.perf_counter(),   # ジッタ確認用の実測受信時刻

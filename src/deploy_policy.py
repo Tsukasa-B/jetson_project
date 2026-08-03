@@ -57,6 +57,8 @@ def parse_args():
     p.add_argument("--no-input", action="store_true", help="ENTER待ちをしない")
     p.add_argument("--dump_obs", type=str, default=None,
                    help="obs/actionの系列を .npz に保存（パリティ検証用）")
+    p.add_argument("--swap_encoders", action="store_true",
+                   help="手首/ハンド関節エンコーダの配線が逆のとき、受信角度2chを入れ替える")
     p.add_argument("--list", action="store_true", help="manifest のモデル一覧を表示して終了")
     return p.parse_args()
 
@@ -98,7 +100,7 @@ class Deployer:
             baud = args.baud or int(defaults.get("baud_rate", 230400))
             print(f"[Link] {port} @ {baud}")
             self.ser = open_serial(port, baud)
-        self.receiver = SensorReceiver(self.ser)
+        self.receiver = SensorReceiver(self.ser, swap_encoders=args.swap_encoders)
         self.receiver.start()
 
         self.prev_action = np.zeros(3, dtype=np.float32)
@@ -145,6 +147,7 @@ class Deployer:
         print(f"  model : {self.spec.key}  ({self.spec.label})")
         print(f"  song  : {a.midi}  (trial {a.trial})")
         print(f"  loop  : {1/self.dt:.0f}Hz control / {SENSOR_RATE_HZ:.0f}Hz recv")
+        print(f"  encoder: {'SWAPPED (wrist<->grip)' if a.swap_encoders else 'as received'}")
 
         send_pressure(self.ser, 0, 0, 0)
         time.sleep(0.2 if a.mock else 2.0)
@@ -257,6 +260,7 @@ class Deployer:
             "control_dt": self.dt, "p_max": self.spec.p_max,
             "target_force": self.spec.target_force, "qd_clip": QD_CLIP,
             "mock": bool(a.mock), "verify": bool(a.verify),
+            "swap_encoders": bool(a.swap_encoders),
             "elapsed_sec": round(elapsed, 3),
             "packets_received": self.receiver.n_packets,
             "packets_expected_at_200hz": expected,

@@ -65,6 +65,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0, help="シャッフルの乱数種（再現性のため記録）")
     ap.add_argument("--yes", action="store_true", help="各ラン前のENTER待ちをしない")
     ap.add_argument("--force_scale", type=float, default=None)
+    ap.add_argument("--swap_encoders", action="store_true",
+                    help="手首/ハンド関節エンコーダの配線が逆のとき指定（全ランに適用）")
     args = ap.parse_args()
 
     plan = load_plan(args.plan)
@@ -109,6 +111,8 @@ def main():
                "--trial", str(j["trial"]), "--no-input"]
         if args.force_scale is not None:
             cmd += ["--force_scale", str(args.force_scale)]
+        if args.swap_encoders:
+            cmd += ["--swap_encoders"]
 
         r = subprocess.run(cmd, cwd=REPO_ROOT)
         if r.returncode == 0:

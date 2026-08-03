@@ -1,0 +1,32 @@
+{
+  "model_key": "RAL/C_seed5",
+  "model_label": "C: LSTM, lookahead=1.0s",
+  "model_file": "models/RAL/modelC_seed5.onnx",
+  "arch": "lstm",
+  "lookahead_horizon": 1.0,
+  "lookahead_steps": 50,
+  "frame_stack": 1,
+  "obs_dim": 60,
+  "manifest_extra": {
+    "seed": 5,
+    "checkpoint": "model_1499.pt"
+  },
+  "midi": "songs/test_double_bpm160.mid",
+  "bpm": 160.0,
+  "trial": 1,
+  "control_dt": 0.02,
+  "p_max": 0.6,
+  "target_force": 20.0,
+  "qd_clip": 20.0,
+  "mock": false,
+  "verify": false,
+  "swap_encoders": false,
+  "elapsed_sec": 8.02,
+  "packets_received": 1599,
+  "packets_expected_at_200hz": 1604,
+  "packet_yield": 0.9969,
+  "bytes_discarded_on_resync": 26,
+  "control_steps": 401,
+  "git_rev": "unknown",
+  "timestamp": "2026-08-03T04:19:51+0000"
+}

@@ -63,7 +63,11 @@ def extract_strikes_real(
     force_col: str = "force_N",
     time_col: str = "time",
     force_offset: float = 0.0,
+    force_threshold: float | None = None,
 ) -> pd.DataFrame:
+    """force_threshold: 打撃と認める最小の力[N]。None なら sim準拠の
+    min_strike_frac * target_ref (= 0.25 x 20 = 5 N)。
+    ★1N など変更する場合、sim側 strike_extract.py も同じ値に揃えないと比較が壊れる。"""
     """実機CSVから打点ごとの結果を返す。sim の extract_strikes と同一判定。"""
     need = {time_col, "target_force", force_col}
     missing = need - set(df.columns)
@@ -82,6 +86,7 @@ def extract_strikes_real(
     if bpm <= 0:
         raise ValueError(f"不正なbpm={bpm}")
     t16 = 15.0 / bpm
+    thr = force_threshold if force_threshold is not None else min_strike_frac * target_ref
 
     # --- 目標時刻: 指令の変化点だけを取った50Hz系列から求める ---
     # (200Hzに引き伸ばされた階段の平坦ピーク中央化を避けるため)
@@ -110,7 +115,7 @@ def extract_strikes_real(
         rows.append(dict(
             strike_idx=i, target_time=float(tt), peak_time=float(lt[j]),
             timing_err_ms=err_ms, peak_force=pf,
-            success=bool(pf >= min_strike_frac * target_ref and abs(err_ms) <= tol_ms),
+            success=bool(pf >= thr and abs(err_ms) <= tol_ms),
         ))
     return pd.DataFrame(rows, columns=["strike_idx", "target_time", "peak_time",
                                        "timing_err_ms", "peak_force", "success"])
@@ -143,7 +148,8 @@ def apply_time_source(df: pd.DataFrame, mode: str) -> pd.DataFrame:
 
 def summarize_file(csv_path: str, force_offset: float = 0.0,
                    time_source: str = "recon", include_mock: bool = False,
-                   include_suspect: bool = False) -> dict | None:
+                   include_suspect: bool = False, force_threshold: float | None = None,
+                   strike_sink: list | None = None) -> dict | None:
     """1ラン分のCSV+JSONを読んで、1行のサマリdictを返す。"""
     json_path = os.path.splitext(csv_path)[0] + ".json"
     meta = {}
@@ -183,11 +189,23 @@ def summarize_file(csv_path: str, force_offset: float = 0.0,
         bpm = float(m.group(1))
 
     target_ref = float(meta.get("target_force", TARGET_REF_DEFAULT))
-    st = extract_strikes_real(df, bpm=bpm, target_ref=target_ref, force_offset=force_offset)
+    st = extract_strikes_real(df, bpm=bpm, target_ref=target_ref, force_offset=force_offset,
+                              force_threshold=force_threshold)
     if st.empty:
         return None
 
-    hit = st[st["peak_force"] >= MIN_STRIKE_FRAC * target_ref]
+    thr = force_threshold if force_threshold is not None else MIN_STRIKE_FRAC * target_ref
+    hit = st[st["peak_force"] >= thr]
+
+    if strike_sink is not None:
+        s2 = st.copy()
+        s2["model_key"] = meta.get("model_key", "")
+        s2["model"] = str(meta.get("model_key", "")).split("/")[-1].split("_")[0]
+        s2["seed"] = meta.get("manifest_extra", {}).get("seed", "")
+        s2["midi"] = os.path.basename(meta.get("midi", ""))
+        s2["trial"] = meta.get("trial", "")
+        s2["force_threshold"] = thr
+        strike_sink.append(s2)
 
     # 誤差が「一定オフセット」か「時間とともに増えるドリフト」かを切り分ける
     drift_ms_per_s = np.nan
@@ -207,7 +225,7 @@ def summarize_file(csv_path: str, force_offset: float = 0.0,
         "err_ms_mean": float(st.loc[hit.index, "timing_err_ms"].mean()) if len(hit) else np.nan,
         "err_ms_std": float(st.loc[hit.index, "timing_err_ms"].std()) if len(hit) else np.nan,
         "peak_force_mean": float(st["peak_force"].mean()),
-        "miss_rate_force": float((st["peak_force"] < MIN_STRIKE_FRAC * target_ref).mean()),
+        "miss_rate_force": float((st["peak_force"] < thr).mean()),
         "drift_ms_per_s": drift_ms_per_s,
         "time_source": time_source,
         "packet_yield": meta.get("packet_yield", np.nan),
@@ -228,6 +246,10 @@ def main():
     ap.add_argument("--compare_time_sources", action="store_true",
                     help="3つの時刻定義で成功率を並べ、時計依存性を確認する")
     ap.add_argument("--include_mock", action="store_true", help="mock/verify実行も含める")
+    ap.add_argument("--force_threshold", type=float, default=None,
+                    help="打撃と認める最小の力[N]。既定は sim準拠の 5N (=0.25x20N)")
+    ap.add_argument("--dump_strikes", type=str, default=None,
+                    help="打点ごとの明細CSVを保存（タイミング誤差分布の図に使う）")
     ap.add_argument("--include_suspect", action="store_true",
                     help="力センサ異常の疑いがあるランも集計に含める")
     args = ap.parse_args()
@@ -239,10 +261,11 @@ def main():
         files = [args.path]
 
     rows = []
+    sink = [] if args.dump_strikes else None
     for f in files:
         try:
             r = summarize_file(f, args.force_offset, args.time_source, args.include_mock,
-                               args.include_suspect)
+                               args.include_suspect, args.force_threshold, sink)
         except Exception as e:  # noqa: BLE001
             print(f"[SKIP] {os.path.basename(f)}: {e}")
             continue
@@ -278,6 +301,12 @@ def main():
             abs_err_ms=("abs_err_ms_mean", "mean"),
         )
         print(agg.to_string())
+
+    if args.dump_strikes and sink:
+        allst = pd.concat(sink, ignore_index=True)
+        os.makedirs(os.path.dirname(os.path.abspath(args.dump_strikes)) or ".", exist_ok=True)
+        allst.to_csv(args.dump_strikes, index=False)
+        print(f"[saved] {args.dump_strikes}  ({len(allst)} 打点)")
 
     if args.summary:
         os.makedirs(os.path.dirname(os.path.abspath(args.summary)) or ".", exist_ok=True)

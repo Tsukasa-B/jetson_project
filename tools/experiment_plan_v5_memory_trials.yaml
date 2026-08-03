@@ -1,0 +1,28 @@
+# 記憶軸の trial 追加（B/D/E × 5seed × gmd_03 × 3trial）
+# trial1 は第4セッションで取得済み → --resume で自動スキップされ 30ラン になる
+# 配線は修理済み。--swap_encoders は付けないこと。
+name: "記憶軸 trial追加（B/D/E × gmd_03, 30ラン）"
+est_sec_per_run: 60
+cooldown_sec: 3
+
+blocks:
+  - name: "memory_extra_trials"
+    models:
+      - RAL/B_seed1
+      - RAL/B_seed2
+      - RAL/B_seed3
+      - RAL/B_seed4
+      - RAL/B_seed5
+      - RAL/D_seed1
+      - RAL/D_seed2
+      - RAL/D_seed3
+      - RAL/D_seed4
+      - RAL/D_seed5
+      - RAL/E_seed1
+      - RAL/E_seed2
+      - RAL/E_seed3
+      - RAL/E_seed4
+      - RAL/E_seed5
+    songs:
+      - songs/gmd_03_high_bpm138.mid
+    trials: 3

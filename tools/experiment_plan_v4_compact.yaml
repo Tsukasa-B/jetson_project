@@ -1,0 +1,81 @@
+# =============================================================================
+# experiment_plan_v4_compact.yaml — 第4セッション（全モデル一括、75ラン）
+#
+#   python3 tools/run_experiment_batch.py --plan tools/experiment_plan_v4_compact.yaml --dry_run
+#   python3 tools/run_experiment_batch.py --plan tools/experiment_plan_v4_compact.yaml --shuffle --seed 3
+#
+# ■ 設計方針
+#   5モデル(A/B/C/D/E) × 5seed × 3曲 × 1trial = 75ラン（約1.25時間）
+#
+#   ★ 先読み軸(A/B/C) と 記憶軸(D/B/E) を「同一セッション」で撮る。
+#     セッション1〜3では軸ごとにセッションが分かれていたため、
+#     セッション間のリグ状態差（Bが0.133〜0.398で変動）が交絡していた。
+#     全モデルを1セッションに入れれば、この問題が構造的に消える。
+#     Bが両軸に共通で入るので、アンカーも自動的に成立する。
+#
+#   ★ seed は5本すべて維持する。削らないこと。
+#     実測のばらつきは seed間 SD=0.143 > trial間 SD=0.090 で、
+#     seedのほうが大きい。seed1本にすると、B vs E の結論が
+#     seedの引き次第で52%対48%（実質コイン投げ）になることを確認済み。
+#     trial を1回に削っても seed推定の悪化は約18%にとどまる。
+#
+# ■ 曲の選定（打点数が多いほど1ランあたりの精度が上がる）
+#     test_single8_bpm120   12打点  単純（全モデル横並びになるはずの対照）
+#     test_double_bpm160    24打点  中間
+#     gmd_03_high_bpm138    78打点  複雑（過去3セッションで差が最大）
+#   ※ test_single4_bpm60 は6打点しかなく、1trialでは粗すぎるので外した
+#
+# ■ 実行前に必ず確認
+#   □ エンコーダ配線: python3 tools/check_encoder_wiring.py results/RAL_session3
+#       「反転」と出たら、下のコマンドに --swap_encoders を付けて実行する
+#   □ 手のひら関節のワイヤー（過去に3回脱落）
+#   □ 力センサのアンプ通電
+#
+# ★ --seed は 3（S1=0, S2=1, S3=2）
+# =============================================================================
+
+name: "RA-L 実機検証 v4（全モデル同一セッション, 75ラン）"
+est_sec_per_run: 60
+cooldown_sec: 3
+
+blocks:
+  - name: "all_models_one_session"
+    models:
+      - RAL/A_seed1
+      - RAL/A_seed2
+      - RAL/A_seed3
+      - RAL/A_seed4
+      - RAL/A_seed5
+      - RAL/B_seed1
+      - RAL/B_seed2
+      - RAL/B_seed3
+      - RAL/B_seed4
+      - RAL/B_seed5
+      - RAL/C_seed1
+      - RAL/C_seed2
+      - RAL/C_seed3
+      - RAL/C_seed4
+      - RAL/C_seed5
+      - RAL/D_seed1
+      - RAL/D_seed2
+      - RAL/D_seed3
+      - RAL/D_seed4
+      - RAL/D_seed5
+      - RAL/E_seed1
+      - RAL/E_seed2
+      - RAL/E_seed3
+      - RAL/E_seed4
+      - RAL/E_seed5
+    songs:
+      - songs/test_single8_bpm120.mid
+      - songs/test_double_bpm160.mid
+      - songs/gmd_03_high_bpm138.mid
+    trials: 1
+    # → 25モデル × 3曲 × 1trial = 75ラン
+
+# ---------------------------------------------------------------------------
+# 途中チェック（30分おき推奨）
+#   python3 analysis/strike_metrics.py results/RAL --include_suspect --summary /tmp/mid.csv
+#   B の gmd_03 が 0.35〜0.40 前後なら健全（セッション2: 0.398, セッション3: 0.356）
+#   0.20 を割ったら止めてワイヤーと力センサを確認
+# ---------------------------------------------------------------------------
