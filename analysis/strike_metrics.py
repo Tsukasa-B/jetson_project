@@ -64,6 +64,7 @@ def extract_strikes_real(
     time_col: str = "time",
     force_offset: float = 0.0,
     force_threshold: float | None = None,
+    method: str = "peak_match",
 ) -> pd.DataFrame:
     """force_threshold: 打撃と認める最小の力[N]。None なら sim準拠の
     min_strike_frac * target_ref (= 0.25 x 20 = 5 N)。
@@ -99,8 +100,52 @@ def extract_strikes_real(
     tgt_peak_idx, _ = find_peaks(tgt_cmd, height=min_strike_frac * target_ref, distance=distance)
     target_times = t_cmd[tgt_peak_idx]
 
-    # --- 実打点: 200Hzの生信号で ±1.5*T16th のargmax ---
+    # --- 実打点の同定 ---
+    # method="peak_match"（既定）: 力のしきい値を超える極大を「実打撃」として検出し、
+    #   各目標に |誤差| の小さい順で最近傍を1対1に割り当てる。IROS の
+    #   analysis/create_fig7.py と同じ方式。
+    #   ★旧方式（"argmax"）は目標ごとに ±1.5*T16th の窓で force の argmax を取っていた。
+    #     目標間隔が窓より近いと隣り合う2つの目標が同一の物理打撃を掴む。160BPMの
+    #     ダブル（間隔80-120ms / 窓±140.6ms）では隣接ペアの47%が該当し、方策が
+    #     どれだけ正確に叩いても成功率が0.5付近で構造的に頭打ちになっていた。
+    #     さらに argmax は「最も強いピーク」を選ぶので、成功判定が意図していない
+    #     力依存が混入していた。peak_match は時間近接だけで選ぶ。
+    #     マッチ窓を ±45〜±150ms で振っても成功率は変わらない（検証済み）。
     half_win = 1.5 * t16
+    if method == "peak_match":
+        dt_s = float(np.median(np.diff(t))) if len(t) > 1 else 0.005
+        act_idx, _ = find_peaks(f, height=thr,
+                                distance=max(1, int(round(0.3 * t16 / dt_s))))
+        act_t, act_f = t[act_idx], f[act_idx]
+        cand = []
+        for ti, tt in enumerate(target_times):
+            for ai in np.nonzero(np.abs(act_t - tt) <= half_win)[0]:
+                cand.append((abs(float(act_t[ai]) - float(tt)), ti, int(ai)))
+        cand.sort()
+        taken_t, taken_a = {}, set()
+        for _, ti, ai in cand:
+            if ti in taken_t or ai in taken_a:
+                continue
+            taken_t[ti] = ai
+            taken_a.add(ai)
+        rows = []
+        for ti, tt in enumerate(target_times):
+            ai = taken_t.get(ti)
+            if ai is None:
+                rows.append(dict(strike_idx=ti, target_time=float(tt), peak_time=np.nan,
+                                 timing_err_ms=np.nan, peak_force=0.0, success=False))
+                continue
+            err = (float(act_t[ai]) - float(tt)) * 1000.0
+            rows.append(dict(strike_idx=ti, target_time=float(tt),
+                             peak_time=float(act_t[ai]), timing_err_ms=err,
+                             peak_force=float(act_f[ai]),
+                             success=bool(abs(err) <= tol_ms)))
+        return pd.DataFrame(rows, columns=["strike_idx", "target_time", "peak_time",
+                                           "timing_err_ms", "peak_force", "success"])
+
+    if method != "argmax":
+        raise ValueError(f"extract_strikes_real: unknown method {method!r}")
+
     rows = []
     for i, tt in enumerate(target_times):
         mask = (t >= tt - half_win) & (t <= tt + half_win)
