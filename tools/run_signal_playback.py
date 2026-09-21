@@ -22,6 +22,8 @@ import argparse
 import os
 import sys
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # ==========================================
 # System Configuration
 # ==========================================
@@ -125,8 +127,7 @@ class ExperimentController:
 
     def _resolve_path(self, name):
         if not name.endswith('.csv'): name += '.csv'
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        path = os.path.join(script_dir, "test_signals", name)
+        path = os.path.join(REPO_ROOT, "test_signals", name)
         if os.path.exists(path): return path
         if os.path.exists(name): return os.path.abspath(name)
         sys.exit(1)
