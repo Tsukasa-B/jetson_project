@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.sh  text eol=lf
+*.py  text eol=lf
+*.csv -text
+*.json -text
+*.onnx binary
+*.pt  binary
+*.mid binary
+*.png binary
+*.pdf binary
+*.gz  binary
