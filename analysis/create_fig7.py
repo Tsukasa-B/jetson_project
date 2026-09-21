@@ -68,7 +68,7 @@ def generate_data():
     conditions = [
         {"env": "Sim", "model": "Baseline (w/o DR)", "path": "../LSTMDRなし/Sim_experiments", "is_real": False},
         {"env": "Sim", "model": "Proposed (w/ DR)", "path": "../LSTMDR/Sim_experiments", "is_real": False},
-        {"env": "Real", "model": "Baseline (w/o DR)", "path": "deploy_results", "is_real": True},
+        {"env": "Real", "model": "Baseline (w/o DR)", "path": "deploy_noDRfolder", "is_real": True},
         {"env": "Real", "model": "Proposed (w/ DR)", "path": "../LSTMDR/Real_experiments", "is_real": True}
     ]
 

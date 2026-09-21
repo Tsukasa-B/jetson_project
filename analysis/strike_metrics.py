@@ -27,13 +27,13 @@ sim側の正準実装 `porcaro_2026/analysis/harness/strike_extract.py::extract_
 
 Usage:
   # 1ファイル
-  python3 analysis/strike_metrics.py results/RAL/modelE_seed1/deploy_xxx.csv
+  python3 analysis/strike_metrics.py data/ral_20260731/deploy_xxx.csv
 
-  # ディレクトリ配下を再帰的に集計してサマリCSVを出す
-  python3 analysis/strike_metrics.py results/RAL --summary results/RAL/summary.csv
+  # ディレクトリ配下を再帰的に集計してサマリCSVを出す（data/ 全体でもよい）
+  python3 analysis/strike_metrics.py data --summary out/ral/summary.csv
 
   # ゼロ点補正をかける
-  python3 analysis/strike_metrics.py results/RAL --force_offset -20.0
+  python3 analysis/strike_metrics.py data/ral_20260731 --force_offset -20.0
 """
 
 from __future__ import annotations

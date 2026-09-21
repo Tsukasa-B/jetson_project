@@ -5,7 +5,7 @@ run_experiment_batch.py — 実機実験のバッチ実行（条件×モデル×
 このスクリプトは実験計画(YAML)を読んで順に実行し、
   * 実行前に必ず内容を表示して確認を取る（--yes で省略可）
   * 各ランの前に人の合図(ENTER)を待つ。コンプレッサ圧の回復待ちに使う
-  * 途中で止めても、既に完了したランは results/ に残る（--resume で続きから）
+  * 途中で止めても、既に完了したランは data/ に残る（--resume で続きから）
   * 実行順をシャッフルできる（--shuffle。リグの経時変化がモデル順と交絡するのを防ぐ）
 
 Usage:
@@ -48,10 +48,10 @@ def build_jobs(plan: dict) -> list[dict]:
 
 
 def already_done(job: dict) -> bool:
-    """results/ に同じ(model, song, trial)のCSVが既にあるか。"""
+    """data/<group>_<日付>/ (日付は問わない) に同じ(model, song, trial)のCSVが既にあるか。"""
     group, name = job["model"].split("/")
     stem = os.path.splitext(os.path.basename(job["song"]))[0]
-    pattern = os.path.join(REPO_ROOT, "results", group, f"model{name}",
+    pattern = os.path.join(REPO_ROOT, "data", f"{group.lower()}_*",
                            f"deploy_{stem}_{group}-{name}_trial{job['trial']:02d}_*.csv")
     return bool(glob.glob(pattern))
 
@@ -125,7 +125,7 @@ def main():
     print(f"\n=== 完了: 成功 {ok} / 失敗 {len(ng)} ===")
     for j in ng:
         print(f"  FAILED: {j['model']} {j['song']} trial{j['trial']}")
-    print("\n集計:  python3 analysis/strike_metrics.py results/RAL --summary results/RAL/summary.csv")
+    print("\n集計:  python3 analysis/strike_metrics.py data --summary out/ral/summary.csv")
     return 0 if not ng else 1
 
 

@@ -32,7 +32,7 @@ IROS:
     frame_stack: 1
     label: "A: LSTM, lookahead=0.1s"
     legacy_name: modelD.onnx
-    note: "IROS実機データ IROS/deploy_results/modelD/ に対応"
+    note: "IROS実機データ IROS/deploy_legacyD/ に対応"
   B:
     file: IROS/modelB.onnx
     arch: lstm
@@ -40,7 +40,7 @@ IROS:
     frame_stack: 1
     label: "B: LSTM, lookahead=0.5s"
     legacy_name: modelB.onnx
-    note: "原論文の主役。IROS/deploy_results/modelB/ に対応（旧名と一致）"
+    note: "原論文の主役。IROS/deploy_legacyB/ に対応（旧名と一致）"
   C:
     file: IROS/modelC.onnx
     arch: lstm
@@ -48,7 +48,7 @@ IROS:
     frame_stack: 1
     label: "C: LSTM, lookahead=1.0s"
     legacy_name: modelA.onnx
-    note: "IROS実機データ IROS/deploy_results/modelA/ に対応"
+    note: "IROS実機データ IROS/deploy_legacyA/ に対応"
   D:
     file: IROS/modelD.onnx
     arch: mlp
@@ -56,7 +56,7 @@ IROS:
     frame_stack: 1
     label: "D: MLP, lookahead=0.5s"
     legacy_name: modelC.onnx
-    note: "記憶なしMLP。IROS/deploy_results/modelC/ に実機データあり"
+    note: "記憶なしMLP。IROS/deploy_legacyC/ に実機データあり"
 
 # -----------------------------------------------------------------------------
 # RA-L用にexportするモデル置き場（これから埋める）

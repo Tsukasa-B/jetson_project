@@ -5,7 +5,7 @@ check_encoder_wiring.py — 手首/ハンド関節エンコーダの配線が入
 実機に触らずログだけで判定できる。物理確認ができないときに使う。
 
 原理:
-  IROS/deploy_results/ の90ファイル（配線が正しかった時期）では、
+  IROS/deploy_* の90ファイル（配線が正しかった時期）では、
   2つの角度チャンネルの統計的な指紋がはっきり分かれている:
 
       wrist_angle_deg : 平均 33.96 ± 11.09 deg,  範囲 64.3 deg,  力との相関 0.13
@@ -16,9 +16,9 @@ check_encoder_wiring.py — 手首/ハンド関節エンコーダの配線が入
   検査対象でこの大小関係が反転していれば、配線が逆になっている。
 
 Usage:
-  python3 tools/check_encoder_wiring.py results/RAL_session1
-  python3 tools/check_encoder_wiring.py results/RAL_session2 results/RAL_session3
-  python3 tools/check_encoder_wiring.py results/RAL_session1 --ref IROS/deploy_results
+  python3 tools/check_encoder_wiring.py data/ral_20260731
+  python3 tools/check_encoder_wiring.py data/ral_20260731_b data/ral_20260731_c
+  python3 tools/check_encoder_wiring.py data/ral_20260731 --ref IROS/deploy_*
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def report(name: str, s: pd.DataFrame) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("targets", nargs="+", help="検査するディレクトリ")
-    ap.add_argument("--ref", default="IROS/deploy_results",
+    ap.add_argument("--ref", default="IROS/deploy_*",
                     help="基準（配線が正しかった時期のデータ）")
     args = ap.parse_args()
 

@@ -4,7 +4,7 @@ parity_test.py — 新しい観測構築が IROS時のコードと数値的に�
 やること
   1. 旧 run_rl_deploy_midi.py の観測構築（torch.cat 版）をそのまま再現し、
      新 deploy_policy.build_base_frame と **ビット一致** するかを確認する。
-     入力は実機ログ(IROS/deploy_results/**.csv)の角度系列をそのまま再生。
+     入力は実機ログ(IROS/deploy_*/**.csv)の角度系列をそのまま再生。
   2. frame stacking の並びが sim (user0/porcaro_2026_env.py) と一致するかを確認。
      sim:  obs_history = roll(obs_history, -1); obs_history[-1] = new; reshape(-1)
 
@@ -70,7 +70,7 @@ def test_obs_parity(model_key="IROS/B", midi="songs/test_single4_bpm60.mid", n_s
     dt = spec.control_dt
 
     # 実機ログの角度系列を入力に使う（無ければ合成波）
-    cands = sorted(glob.glob(os.path.join(ROOT, "IROS", "deploy_results", "**", "*.csv"),
+    cands = sorted(glob.glob(os.path.join(ROOT, "IROS", "deploy_*", "**", "*.csv"),
                              recursive=True))
     if cands:
         import pandas as pd

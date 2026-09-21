@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -234,8 +235,8 @@ class Deployer:
             dc = pd.DataFrame(self.cmd_logs).rename(columns={"cmd_time": "time"})
             df = pd.merge_asof(df, dc, on="time", direction="backward")
 
-        out_dir = a.out or os.path.join(REPO_ROOT, "results", self.spec.group,
-                                        f"model{self.spec.name}")
+        out_dir = a.out or os.path.join(
+            REPO_ROOT, "data", f"{self.spec.group.lower()}_{date.today():%Y%m%d}")
         os.makedirs(out_dir, exist_ok=True)
         midi_name = os.path.splitext(os.path.basename(a.midi))[0]
         tag = "verify" if a.verify else f"{self.spec.group}-{self.spec.name}"
