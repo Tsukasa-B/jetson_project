@@ -14,7 +14,9 @@ Jetson (Docker) ──serial 230400bps, BigEndian, header FFFF──> MicroLabBo
 
 ---
 
-## ディレクトリ構成
+## ディレクトリ構成（v3再編、2026-09）
+
+全ファイルのパスはルートから3階層以内（`dir/dir/file` まで）。
 
 ```
 src/            実行コード（デプロイ本体）
@@ -30,10 +32,30 @@ models/
 
 songs/          入力MIDI（test_*, gmd_*）
 test_signals/   ポリシー無しの指令信号CSV（exp1〜8）
-tools/          データ収集・信号生成・疎通確認・検証スクリプト
+tools/          データ収集・信号生成・疎通確認・検証スクリプト（serial_test/ 含む）
 analysis/       図の生成・解析
-results/        ★これからの実機ログ出力先（results/<group>/model<X>/）
-IROS/           IROS時の成果物アーカイブ（読み取り専用）→ IROS/README.md
+
+data/           ★研究の実機ログ（これからのRUN）。1セッション1フォルダ、中はフラット
+  ral_YYYYMMDD/      デプロイ実行の出力先（下記「出力先の既定値」参照）
+  ral_YYYYMMDD_b/    同日に複数セッションがある場合の2つ目以降
+  ral_quarantine/    力センサ死亡が疑われ集計から除外したラン（IROS期モデルで実施したもの含む）
+
+out/            集計CSV・図（analysis/ の出力）
+  ral/               summary_*.csv, strikes_*.csv など
+
+IROS/           ★IROS投稿時点の凍結アーカイブ（読み取り専用）→ IROS/README.md
+  deploy_legacyA〜D/, deploy_DRfolder/, deploy_noDRfolder/  実機デプロイ結果（旧フォルダ名）
+  sysid_20260111/, sysid_misc/    システム同定の生ログ
+  verification/      通信・センサ検証ログ
+  measured/           指令信号CSV再生時の実測データ
+  figures_paper/, figures_analysis/  論文図・解析図
+  legacy_code/        当時のデプロイスクリプト（参照用）
+  models_pt/          当時の.ptチェックポイント（models/IROS/*.onnx がデプロイ用実体）
+
+oc_demo/        オープンキャンパスデモ（コード不変）
+  docs/, dist/        旧ルート直下にあった設計メモ・配布物
+midi/           OCデモ用MIDI（`oc_demo/tools/make_demo_midi.py` の出力先。動かさない）
+run_oc_demo.sh  OCデモ起動スクリプト（Jetsonで直接叩く。動かさない）
 ```
 
 ---
@@ -95,7 +117,11 @@ python3 src/deploy_policy.py --model IROS/B --midi songs/test_single4_bpm60.mid 
 python3 tools/run_signal_playback.py exp2_step_response.csv
 ```
 
-出力は `results/<group>/model<X>/deploy_<曲>_<group>-<X>_trial<NN>_<unixtime>.csv` と、
+出力先（既定）は `data/<group小文字>_<実行開始日 YYYYMMDD>/`（例: `data/ral_20260922/`）。
+同日に複数セッションを走らせて既存フォルダと衝突する場合は、手で `_b` `_c` ... を付けて
+退避してから次のセッションを始めること（`data/ral_20260731` 〜 `_c` の前例を参照）。
+`--out` で明示的に指定すれば既定値は使わない。
+ファイル名は `deploy_<曲>_<group>-<X>_trial<NN>_<unixtime>.csv` と、
 同名の `.json`（モデル・trial番号・パケット受信率・git rev などの実行条件）。
 
 ### モデルを追加・差し替えたら必ず
@@ -136,3 +162,29 @@ sudo python3 tools/collect_real_data.py --mode hysteresis   # 1分（ゆっく�
 - **LSTMの隠れ状態**は実行開始時にゼロ初期化（1曲1プロセスが前提）。
 - **ボーレートが用途で違う**: デプロイ 230400 ／ `tools/collect_real_data.py` 115200 ／
   `tools/serial_test/` 115200。MicroLabBox側 Simulink の設定と対で切り替わる。
+
+---
+
+## Jetson側での反映手順（v3再編の取り込み）
+
+1. **pull前に、Jetson上の未コミットのログ（`results/` 以下など、v2時代の場所も含む）を
+   commit & push しておく。** 再編PRをmainにマージ後、Jetson側で `git pull` すると
+   `results/` は消えて `data/` に置き換わる。ローカルにしか無いログがあると
+   `git mv` の履歴と衝突・消失する可能性がある。
+2. `git pull` 後、モデル一覧が正しく引けるか確認:
+   ```bash
+   python3 src/deploy_policy.py --list
+   ```
+3. `--mock` で出力先が新しい `data/<group>_<今日>/` に出ることを確認:
+   ```bash
+   python3 src/deploy_policy.py --model RAL/E --midi songs/test_single8_bpm120.mid --mock
+   ```
+4. `--resume` を使うバッチが再開できるか確認（Windows開発機では onnxruntime/torch/pyserial/mido
+   が無くこの部分は未検証。**Jetson側で必ず確認すること**）:
+   ```bash
+   python3 tools/run_experiment_batch.py --plan tools/experiment_plan.yaml --dry_run --resume
+   ```
+5. `run_oc_demo.sh` / `oc_demo/` は位置・中身とも変更していないので、そのまま動くはず。
+   念のため `./run_oc_demo.sh` が `bad interpreter` エラーになる場合は `bash run_oc_demo.sh`
+   で実行する（リポジトリ全体にCRLFが混入しているファイルがあり、`run_oc_demo.sh` 自体は
+   今回のスコープ外として中身を変更していないため）。
