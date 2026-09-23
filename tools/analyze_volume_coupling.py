@@ -17,8 +17,11 @@ N サンプル平均すると振幅推定の誤差は σ·sqrt(2/N) まで落ち
 ----
   dP/dθ が 1.8 Hz 以下でほぼ 0、それ以上で立ち上がって頭打ち
       → 体積結合が実在する。前向きモデルに体積項を入れる根拠になる。
-  dP/dθ が周波数に依らずほぼ 0（< 0.2 kPa/deg）
-      → 体積結合ではない。残差の原因は圧力経路（時定数・むだ時間・ヒステリシス）側。
+  周波数依存の形が決まらない場合は、大きさの上限で判定する。
+  しきい値はすべて EXPECTED_DPDTHETA（期待値）から導き、丸い数字は置かない。
+      95%上限 < 期待値/2 → 体積結合ではない。残差の原因は圧力経路側
+      95%上限 < 期待値   → あっても期待値より小さい。主因とは考えにくい
+      それ以上           → 感度不足。判定できない
   Part C の動作点掃引で dP/dθ が動作点によって変わる
       → ワイヤのたるみ。落ちる動作点がしきい角。Heaviside 項を実測で決められる。
   Part D で符号が反転しない
@@ -215,7 +218,8 @@ def main() -> None:
         if slack == "slack":
             print("  -> 判定しない（Part C が たるみ 陽性のため）。"
                   "上の数値はたるみに汚染されている。")
-        elif np.isfinite(hi) and hi > 0.5 and hi > 1.5 * max(lo, 1e-6):
+        elif (np.isfinite(hi) and hi > EXPECTED_DPDTHETA / 2
+                and hi > 1.5 * max(lo, 1e-6)):
             print(f"  -> {pre}高周波で立ち上がっている。体積結合は実在する。")
             if np.isfinite(fc_fit) and 0.9 <= fc_fit <= 4.0:
                 # 印は結論行にだけ付ける。ここに重ねると冗長になる。
@@ -223,11 +227,13 @@ def main() -> None:
             if slack == "unknown":
                 print("     この結論を確定として扱わないこと。"
                       "先に Part C を --repeats を増やして取り直す。")
-        elif np.isfinite(hi) and hi < 0.2:
-            print(f"  -> {pre}周波数によらず小さい。"
-                  "体積結合では残差を説明できない。")
         else:
-            print("  -> 判定保留。SNR とノイズ床を確認すること。")
+            # 形（周波数依存）では言えなかった。大きさの上限なら言える。
+            # ここを「判定保留」で終わらせると、点が3つ以上生き残った
+            # ときだけ結論が出ない、という逆転が起きる（点が足りない
+            # ときは下の分岐が上限で結論を出すのに）。
+            print("  周波数依存の形からは言えないので、大きさの上限で判定する。")
+            report_bound(a_all, pre, n_rep)
     elif len(a_all) >= 3:
         # 全点が SNR で落ちた ＝ 応答がどこにも出ていない。
         # これは「測れなかった」ではなく「体積結合が無い」かもしれない。
@@ -235,38 +241,10 @@ def main() -> None:
         # あったかどうか。上限を出して判定する。
         # （Part C と同じ話。フィルタで落とすと、出したい結論の片方が
         #   永久に印字されなくなる。）
-        hf = a_all[a_all["freq_Hz"] >= 3.0]
-        v = hf["dPdtheta_kPa_per_deg"].values.astype(float)
-        sg = hf["sigma"].values.astype(float)
-        ok = np.isfinite(v) & np.isfinite(sg) & (sg > 0)
         print(f"\n[Part A] 判定に使える点が {len(a)}/{len(a_all)} しかない"
               "（SNR<3 が多い）。周波数依存の形は決められないが、"
               "応答の大きさに上限はつけられる。")
-        if ok.sum() >= 1:
-            w = 1.0 / sg[ok] ** 2
-            vw = float(np.sum(w * v[ok]) / np.sum(w))
-            se = float(1.0 / np.sqrt(np.sum(w)))
-            ub = vw + 2 * se
-            print(f"  3Hz以上の加重平均 {vw:.3f} +/- {se:.3f} kPa/deg "
-                  f"(95%上限 {ub:.2f})")
-            # しきい値は EXPECTED_DPDTHETA から導く。丸い数字を置かない。
-            if ub < EXPECTED_DPDTHETA / 2:
-                print(f"  -> {pre}体積結合は無い。期待値 "
-                      f"{EXPECTED_DPDTHETA} kPa/deg の半分未満"
-                      f"（上限 {ub:.2f}）に抑えられている。"
-                      "残差の原因は圧力経路（時定数・むだ時間・ヒステリシス）側。")
-            elif ub < EXPECTED_DPDTHETA:
-                print(f"  -> {pre}体積結合があっても期待値より小さい"
-                      f"（上限 {ub:.2f} kPa/deg）。"
-                      "残差の主因とは考えにくい。")
-            else:
-                need = int(np.ceil(n_rep * (ub / (EXPECTED_DPDTHETA / 2)) ** 2))
-                print(f"  -> 感度不足で判定できない（上限 {ub:.2f} kPa/deg は"
-                      f"期待値 {EXPECTED_DPDTHETA} より大きい）。"
-                      f"--repeats {need} 以上か、圧力センサのノイズを"
-                      "先に減らすこと。")
-        else:
-            print("  -> 有効な点が無い。関節が振れているか確認すること。")
+        report_bound(a_all, pre, n_rep)
 
     if len(out[out["part"] == "B"]) and slack == "slack":
         print("\n[Part B] 判定しない（Part C が たるみ 陽性のため）。"
@@ -288,6 +266,39 @@ def main() -> None:
 
     out.to_csv("volume_coupling_result.csv", index=False)
     print("\nwrote volume_coupling_result.csv")
+
+
+def report_bound(a_all: pd.DataFrame, pre: str, n_rep: int) -> None:
+    """3 Hz 以上の応答の大きさに上限をつけて判定する。
+
+    形（周波数依存）が決められないとき、これが唯一言えることになる。
+    しきい値はすべて EXPECTED_DPDTHETA から導く。丸い数字を置かない。
+    """
+    hf = a_all[a_all["freq_Hz"] >= 3.0]
+    v = hf["dPdtheta_kPa_per_deg"].values.astype(float)
+    sg = hf["sigma"].values.astype(float)
+    ok = np.isfinite(v) & np.isfinite(sg) & (sg > 0)
+    if ok.sum() < 1:
+        print("  -> 有効な点が無い。関節が振れているか確認すること。")
+        return
+    w = 1.0 / sg[ok] ** 2
+    vw = float(np.sum(w * v[ok]) / np.sum(w))
+    se = float(1.0 / np.sqrt(np.sum(w)))
+    ub = vw + 2 * se
+    print(f"  3Hz以上の加重平均 {vw:.3f} +/- {se:.3f} kPa/deg "
+          f"(95%上限 {ub:.2f})")
+    if ub < EXPECTED_DPDTHETA / 2:
+        print(f"  -> {pre}体積結合は無い。期待値 {EXPECTED_DPDTHETA} kPa/deg の"
+              f"半分未満（上限 {ub:.2f}）に抑えられている。"
+              "残差の原因は圧力経路（時定数・むだ時間・ヒステリシス）側。")
+    elif ub < EXPECTED_DPDTHETA:
+        print(f"  -> {pre}体積結合があっても期待値より小さい"
+              f"（上限 {ub:.2f} kPa/deg）。残差の主因とは考えにくい。")
+    else:
+        need = int(np.ceil(n_rep * (ub / (EXPECTED_DPDTHETA / 2)) ** 2))
+        print(f"  -> 感度不足で判定できない（上限 {ub:.2f} kPa/deg は"
+              f"期待値 {EXPECTED_DPDTHETA} より大きい）。"
+              f"--repeats {need} 以上か、圧力センサのノイズを先に減らすこと。")
 
 
 def report_part_c(out: pd.DataFrame, n_rep: int) -> str:
