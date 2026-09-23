@@ -13,7 +13,7 @@ CSV_DIR = "logs_verification"
 
 # --- データ仕様定義 ---
 # 受信 (MicroLabBox -> Jetson): 6個 (double x 6 = 48 bytes)
-# [0:PAMDF内圧, 1:PAMF内圧, 2:PAMG内圧, 3:WristAngle, 4:HandAngle, 5:p_flag]
+# [0:PAMDF内圧, 1:PAMF内圧, 2:PAMG内圧, 3:wristAngle, 4:HandAngle, 5:p_flag]
 RECV_FMT = '>dddddd' 
 RECV_PAYLOAD_LEN = 48
 RECV_PACKET_LEN = 2 + RECV_PAYLOAD_LEN # Header(2) + Payload

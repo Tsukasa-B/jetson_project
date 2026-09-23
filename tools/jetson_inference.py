@@ -110,7 +110,7 @@ def main():
             max_p_diff = P_MAX * 0.5
             p_diff = max_p_diff * act[0]
             
-            # 2. Wrist Pressures (拮抗)
+            # 2. wrist Pressures (拮抗)
             p_df = np.clip(p_base + p_diff, 0.0, P_MAX)
             p_f  = np.clip(p_base - p_diff, 0.0, P_MAX)
             

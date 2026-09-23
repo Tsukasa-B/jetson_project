@@ -251,7 +251,7 @@ class RLDeployer:
                 # 2. 観測ベクトル構築 (Dim=35)
                 # [Joint(4), Action(3), Phase(2), BPM(1), Traj(25)]
                 
-                # Joint: [WristPos, WristVel, GripPos, GripVel]
+                # Joint: [wristPos, wristVel, GripPos, GripVel]
                 # Simはrad単位。Realはdegで来るので変換。
                 # Gripは固定(0.5MPa)なので、角度・速度は0と仮定するか、センサあれば入れる
                 q_wrist = np.radians(sensor['angle_deg'])

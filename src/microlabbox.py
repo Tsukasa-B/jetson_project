@@ -27,7 +27,7 @@ class SensorReceiver(threading.Thread):
 
     swap_encoders: MicroLabBox から届く角度2ch (payload[3], payload[4]) を入れ替える。
         配線上 wrist joint と hand(grip) joint のエンコーダが逆に繋がっている場合に使う。
-        sim 側の観測は dof_names = ["Base_link_Wrist_joint", "Hand_link_Grip_joint"] の
+        sim 側の観測は dof_names = ["Base_link_wrist_joint", "Hand_link_Grip_joint"] の
         順、すなわち obs[0]=wrist, obs[1]=grip なので、実機側がこの順で入っていないと
         ポリシーは学習時と違う固有受容感覚を受け取ることになる。
     """
