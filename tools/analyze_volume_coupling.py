@@ -200,15 +200,24 @@ def main() -> None:
         # しきい値 1.5 倍の根拠: 一次ハイパスが fc=1.8Hz なら
         # |H(1Hz)|=0.49, |H(3Hz)|=0.86, |H(8Hz)|=0.98 なので
         # 低域平均と高域平均の比は 1.7 程度にしかならない。2倍は厳しすぎる。
+        # "unknown" のときは結論行そのものを書き換える。
+        # バナーだけだと、結論行を拾ってメモに書き写したときに
+        # "clean" と区別がつかない。
+        pre = "【暫定・たるみ未確定】" if slack == "unknown" else ""
         if slack == "slack":
             print("  -> 判定しない（Part C が たるみ 陽性のため）。"
                   "上の数値はたるみに汚染されている。")
         elif np.isfinite(hi) and hi > 0.5 and hi > 1.5 * max(lo, 1e-6):
-            print("  -> 高周波で立ち上がっている。体積結合は実在する。")
+            print(f"  -> {pre}高周波で立ち上がっている。体積結合は実在する。")
             if np.isfinite(fc_fit) and 0.9 <= fc_fit <= 4.0:
-                print("     fc も予想範囲内。圧力源の追従限界という説明と整合する。")
+                print(f"     {pre}fc も予想範囲内。"
+                      "圧力源の追従限界という説明と整合する。")
+            if slack == "unknown":
+                print("     この結論を確定として扱わないこと。"
+                      "先に Part C を --repeats を増やして取り直す。")
         elif np.isfinite(hi) and hi < 0.2:
-            print("  -> 周波数によらず小さい。体積結合では残差を説明できない。")
+            print(f"  -> {pre}周波数によらず小さい。"
+                  "体積結合では残差を説明できない。")
         else:
             print("  -> 判定保留。SNR とノイズ床を確認すること。")
 
