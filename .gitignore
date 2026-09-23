@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# 解析スクリプトの出力
+volume_coupling_result.csv
