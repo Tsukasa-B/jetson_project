@@ -41,6 +41,13 @@ import pandas as pd
 SENSOR_RATE_HZ = 200.0
 EDGE_SKIP_S = 0.6          # テーパ区間を捨てる
 
+# 体積結合が実在した場合に期待される大きさ [kPa/deg]。
+# 等温・密閉で dP/P = -dV/V、Δθ=20deg -> Δε=3.3%、dV/V≈2Δε、
+# P_abs=0.35 MPa から 23 kPa / 20 deg ≈ 1.1。
+# 「応答が小さい」を結論として使うときの基準になるので、
+# 丸めたしきい値を別に置かず、すべてここから導く。
+EXPECTED_DPDTHETA = 1.1
+
 
 def lockin(x: np.ndarray, t: np.ndarray, f: float) -> tuple[float, float]:
     """x の周波数 f 成分の振幅と位相[deg]。"""
@@ -232,7 +239,9 @@ def main() -> None:
         v = hf["dPdtheta_kPa_per_deg"].values.astype(float)
         sg = hf["sigma"].values.astype(float)
         ok = np.isfinite(v) & np.isfinite(sg) & (sg > 0)
-        print("\n[Part A] 全点が SNR<3。応答がどこにも出ていない。")
+        print(f"\n[Part A] 判定に使える点が {len(a)}/{len(a_all)} しかない"
+              "（SNR<3 が多い）。周波数依存の形は決められないが、"
+              "応答の大きさに上限はつけられる。")
         if ok.sum() >= 1:
             w = 1.0 / sg[ok] ** 2
             vw = float(np.sum(w * v[ok]) / np.sum(w))
@@ -240,18 +249,22 @@ def main() -> None:
             ub = vw + 2 * se
             print(f"  3Hz以上の加重平均 {vw:.3f} +/- {se:.3f} kPa/deg "
                   f"(95%上限 {ub:.2f})")
-            if ub < 0.5:
-                print(f"  -> {pre}体積結合は無い。期待値 1.1 kPa/deg なら"
-                      f"検出できた感度（上限 {ub:.2f}）で出ていない。"
+            # しきい値は EXPECTED_DPDTHETA から導く。丸い数字を置かない。
+            if ub < EXPECTED_DPDTHETA / 2:
+                print(f"  -> {pre}体積結合は無い。期待値 "
+                      f"{EXPECTED_DPDTHETA} kPa/deg の半分未満"
+                      f"（上限 {ub:.2f}）に抑えられている。"
                       "残差の原因は圧力経路（時定数・むだ時間・ヒステリシス）側。")
-            elif ub < 1.1:
+            elif ub < EXPECTED_DPDTHETA:
                 print(f"  -> {pre}体積結合があっても期待値より小さい"
                       f"（上限 {ub:.2f} kPa/deg）。"
                       "残差の主因とは考えにくい。")
             else:
-                need = int(np.ceil(n_rep * (ub / 0.5) ** 2))
+                need = int(np.ceil(n_rep * (ub / (EXPECTED_DPDTHETA / 2)) ** 2))
                 print(f"  -> 感度不足で判定できない（上限 {ub:.2f} kPa/deg は"
-                      f"期待値 1.1 より大きい）。--repeats {need} 以上で取り直す。")
+                      f"期待値 {EXPECTED_DPDTHETA} より大きい）。"
+                      f"--repeats {need} 以上か、圧力センサのノイズを"
+                      "先に減らすこと。")
         else:
             print("  -> 有効な点が無い。関節が振れているか確認すること。")
 
