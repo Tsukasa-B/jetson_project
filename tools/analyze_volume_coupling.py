@@ -19,8 +19,8 @@ N サンプル平均すると振幅推定の誤差は σ·sqrt(2/N) まで落ち
       → 体積結合が実在する。前向きモデルに体積項を入れる根拠になる。
   dP/dθ が周波数に依らずほぼ 0（< 0.2 kPa/deg）
       → 体積結合ではない。残差の原因は圧力経路（時定数・むだ時間・ヒステリシス）側。
-  Part C の振幅掃引で 原点を通らない（小振幅で 0、しきい値から立ち上がる）
-      → ワイヤのたるみ。Heaviside 項のしきい値を実測で決められる。
+  Part C の動作点掃引で dP/dθ が動作点によって変わる
+      → ワイヤのたるみ。落ちる動作点がしきい角。Heaviside 項を実測で決められる。
   Part D で符号が反転しない
       → 見ているのは体積結合ではなく計測系のクロストーク。配線を疑う。
 
@@ -65,9 +65,17 @@ def main() -> None:
     if "time" not in log.columns:
         log["time"] = np.arange(len(log)) / SENSOR_RATE_HZ
 
+    # --repeats 2 で同じ tag が複数回現れるので、名前ではなく
+    # 「連続した同一 tag のかたまり」で切る。名前で groupby すると
+    # 1回目と2回目の間の休止まで巻き込む。
+    seg = ann["segment"].astype(str).values
+    blk = np.concatenate(([0], np.cumsum(seg[1:] != seg[:-1])))
+    ann = ann.assign(_blk=blk)
+
     rows = []
-    for tag, g in ann.groupby("segment", sort=False):
-        m = re.match(r"^([A-D])_", str(tag))
+    for _, g in ann.groupby("_blk", sort=True):
+        tag = str(g["segment"].iloc[0])
+        m = re.match(r"^([A-D])_", tag)
         if not m:
             continue
         t0, t1 = g["time"].iloc[0], g["time"].iloc[-1]
@@ -93,12 +101,15 @@ def main() -> None:
         a_hold, ph_hold = lockin(p_hold, t, freq)
         a_exc, _ = lockin(p_exc, t, freq)
 
-        # ノイズ床: 加振周波数の 1.37 倍（非調和）での応答を代用
-        nz, _ = lockin(p_hold, t, freq * 1.37)
+        # ノイズ床: 加振周波数の非調和倍での応答の中央値。
+        # 1点だけだとノイズ床自体がばらつくので複数点の中央値を取る。
+        nz = float(np.median([lockin(p_hold, t, freq * k)[0]
+                              for k in (0.71, 1.37, 1.61, 2.29, 2.71)]))
 
         rows.append(dict(
             segment=tag, part=part, freq_Hz=round(float(freq), 2),
             hold_ch=hold,
+            ang_mean_deg=round(float(np.mean(ang)), 1),
             ang_amp_deg=round(a_ang, 2),
             hold_ripple_kPa=round(a_hold, 2),
             noise_kPa=round(nz, 2),
@@ -108,26 +119,89 @@ def main() -> None:
             snr=round(a_hold / nz, 1) if nz > 0 else np.nan,
         ))
 
-    out = pd.DataFrame(rows)
-    pd.set_option("display.width", 160)
+    raw = pd.DataFrame(rows)
+    pd.set_option("display.width", 170)
+
+    # 同一条件の繰り返しを平均する（--repeats 2 のとき）。
+    n_rep = raw.groupby("segment").size().max() if len(raw) else 1
+    if n_rep > 1:
+        num = raw.select_dtypes(include=[np.number]).columns
+        out = (raw.groupby("segment", sort=False)
+                  .agg({**{c: "mean" for c in num},
+                        "part": "first", "hold_ch": "first"})
+                  .reset_index())
+        out["noise_kPa"] /= np.sqrt(n_rep)     # n回平均でノイズ床は 1/sqrt(n)
+        out["snr"] = out["hold_ripple_kPa"] / out["noise_kPa"]
+        out = out.round(3)
+        print(f"(同一条件 {n_rep} 回を平均)")
+    else:
+        out = raw
     print(out.to_string(index=False))
 
-    a = out[out["part"] == "A"].sort_values("freq_Hz")
+    a_all = out[out["part"] == "A"].sort_values("freq_Hz")
+    # SNR が 3 に満たない点は使わない。高周波側は関節角振幅が小さくなるので
+    # ここで落ちやすい。落ちた場合は --repeats を増やして取り直す。
+    a = a_all[a_all["snr"] >= 3.0]
+    if len(a) < len(a_all):
+        dropped = ", ".join(f"{r.segment}(snr {r.snr:.1f})"
+                            for r in a_all[a_all["snr"] < 3.0].itertuples())
+        print(f"\n[除外] SNR<3 のため判定から除外: {dropped}")
     if len(a) >= 3:
         lo = a[a["freq_Hz"] <= 1.8]["dPdtheta_kPa_per_deg"].mean()
         hi = a[a["freq_Hz"] >= 3.0]["dPdtheta_kPa_per_deg"].mean()
         print(f"\n[Part A] dP/dtheta  <=1.8Hz: {lo:.3f}   >=3Hz: {hi:.3f} kPa/deg")
-        if np.isfinite(hi) and hi > 0.5 and hi > 2 * max(lo, 1e-6):
+
+        # 一次ハイパス G*f/sqrt(f^2+fc^2) を当てる。
+        # 圧力源が体積変化を打ち消せなくなる遮断周波数 fc が
+        # 同定済みの 1/(2*pi*tau) ≈ 1.8 Hz 付近に来れば、
+        # 「見えているのは体積結合」という解釈と辻褄が合う。
+        f = a["freq_Hz"].values.astype(float)
+        y = a["dPdtheta_kPa_per_deg"].values.astype(float)
+        ok = np.isfinite(y)
+        fc_fit = g_fit = np.nan
+        if ok.sum() >= 3:
+            best = None
+            for fc in np.linspace(0.2, 12.0, 400):
+                h = f[ok] / np.hypot(f[ok], fc)
+                gain = float(np.sum(y[ok] * h) / np.sum(h * h))
+                err = float(np.sum((y[ok] - gain * h) ** 2))
+                if best is None or err < best[0]:
+                    best = (err, fc, gain)
+            _, fc_fit, g_fit = best
+            print(f"  一次ハイパス当てはめ: fc = {fc_fit:.2f} Hz, "
+                  f"漸近値 G = {g_fit:.2f} kPa/deg "
+                  f"(同定済み tau=88ms から予想される fc = 1.8 Hz)")
+
+        # しきい値 1.5 倍の根拠: 一次ハイパスが fc=1.8Hz なら
+        # |H(1Hz)|=0.49, |H(3Hz)|=0.86, |H(8Hz)|=0.98 なので
+        # 低域平均と高域平均の比は 1.7 程度にしかならない。2倍は厳しすぎる。
+        if np.isfinite(hi) and hi > 0.5 and hi > 1.5 * max(lo, 1e-6):
             print("  -> 高周波で立ち上がっている。体積結合は実在する。")
+            if np.isfinite(fc_fit) and 0.9 <= fc_fit <= 4.0:
+                print("     fc も予想範囲内。圧力源の追従限界という説明と整合する。")
         elif np.isfinite(hi) and hi < 0.2:
             print("  -> 周波数によらず小さい。体積結合では残差を説明できない。")
         else:
             print("  -> 判定保留。SNR とノイズ床を確認すること。")
 
-    c = out[out["part"] == "C"]
+    c = out[out["part"] == "C"].sort_values("ang_mean_deg")
     if len(c) >= 2:
-        print("\n[Part C] 振幅依存性（原点を通るか＝たるみの有無）")
-        print(c[["segment", "ang_amp_deg", "hold_ripple_kPa"]].to_string(index=False))
+        print("\n[Part C] 動作点依存性（たるみの有無）")
+        print(c[["segment", "ang_mean_deg", "ang_amp_deg",
+                 "hold_ripple_kPa", "dPdtheta_kPa_per_deg", "snr"]]
+              .to_string(index=False))
+        v = c["dPdtheta_kPa_per_deg"].values
+        if np.all(np.isfinite(v)) and np.all(c["snr"].values > 3.0):
+            spread = (np.nanmax(v) - np.nanmin(v)) / np.nanmean(v)
+            if spread < 0.3:
+                print(f"  -> 動作点によらず一定 (ばらつき {spread:.0%})。たるみの証拠なし。")
+            else:
+                lo = c.iloc[0]
+                print(f"  -> 動作点で {spread:.0%} 変わる。"
+                      f"最小は平均 {lo['ang_mean_deg']:.0f} deg 付近。"
+                      "たるみのしきい角の候補。")
+        else:
+            print("  -> SNR 不足の条件がある。判定不可。バーストを繰り返して再取得。")
 
     d = out[out["part"] == "D"]
     if len(d) and len(a):
