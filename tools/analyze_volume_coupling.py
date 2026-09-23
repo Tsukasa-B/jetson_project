@@ -163,6 +163,11 @@ def main() -> None:
         print("!! 以下の Part A / B / D は暫定値として読むこと。")
         print("!" * 68)
 
+    # "unknown" のときは結論行そのものを書き換える。
+    # バナーだけだと、結論行を拾ってメモに書き写したときに
+    # "clean" と区別がつかない。
+    pre = "【暫定・たるみ未確定】" if slack == "unknown" else ""
+
     a_all = out[out["part"] == "A"].sort_values("freq_Hz")
     # SNR が 3 に満たない点は使わない。高周波側は関節角振幅が小さくなるので
     # ここで落ちやすい。落ちた場合は --repeats を増やして取り直す。
@@ -200,18 +205,14 @@ def main() -> None:
         # しきい値 1.5 倍の根拠: 一次ハイパスが fc=1.8Hz なら
         # |H(1Hz)|=0.49, |H(3Hz)|=0.86, |H(8Hz)|=0.98 なので
         # 低域平均と高域平均の比は 1.7 程度にしかならない。2倍は厳しすぎる。
-        # "unknown" のときは結論行そのものを書き換える。
-        # バナーだけだと、結論行を拾ってメモに書き写したときに
-        # "clean" と区別がつかない。
-        pre = "【暫定・たるみ未確定】" if slack == "unknown" else ""
         if slack == "slack":
             print("  -> 判定しない（Part C が たるみ 陽性のため）。"
                   "上の数値はたるみに汚染されている。")
         elif np.isfinite(hi) and hi > 0.5 and hi > 1.5 * max(lo, 1e-6):
             print(f"  -> {pre}高周波で立ち上がっている。体積結合は実在する。")
             if np.isfinite(fc_fit) and 0.9 <= fc_fit <= 4.0:
-                print(f"     {pre}fc も予想範囲内。"
-                      "圧力源の追従限界という説明と整合する。")
+                # 印は結論行にだけ付ける。ここに重ねると冗長になる。
+                print("     fc も予想範囲内。圧力源の追従限界という説明と整合する。")
             if slack == "unknown":
                 print("     この結論を確定として扱わないこと。"
                       "先に Part C を --repeats を増やして取り直す。")
@@ -220,6 +221,39 @@ def main() -> None:
                   "体積結合では残差を説明できない。")
         else:
             print("  -> 判定保留。SNR とノイズ床を確認すること。")
+    elif len(a_all) >= 3:
+        # 全点が SNR で落ちた ＝ 応答がどこにも出ていない。
+        # これは「測れなかった」ではなく「体積結合が無い」かもしれない。
+        # 区別できるのは、期待値 1.1 kPa/deg を検出できるだけの感度が
+        # あったかどうか。上限を出して判定する。
+        # （Part C と同じ話。フィルタで落とすと、出したい結論の片方が
+        #   永久に印字されなくなる。）
+        hf = a_all[a_all["freq_Hz"] >= 3.0]
+        v = hf["dPdtheta_kPa_per_deg"].values.astype(float)
+        sg = hf["sigma"].values.astype(float)
+        ok = np.isfinite(v) & np.isfinite(sg) & (sg > 0)
+        print("\n[Part A] 全点が SNR<3。応答がどこにも出ていない。")
+        if ok.sum() >= 1:
+            w = 1.0 / sg[ok] ** 2
+            vw = float(np.sum(w * v[ok]) / np.sum(w))
+            se = float(1.0 / np.sqrt(np.sum(w)))
+            ub = vw + 2 * se
+            print(f"  3Hz以上の加重平均 {vw:.3f} +/- {se:.3f} kPa/deg "
+                  f"(95%上限 {ub:.2f})")
+            if ub < 0.5:
+                print(f"  -> {pre}体積結合は無い。期待値 1.1 kPa/deg なら"
+                      f"検出できた感度（上限 {ub:.2f}）で出ていない。"
+                      "残差の原因は圧力経路（時定数・むだ時間・ヒステリシス）側。")
+            elif ub < 1.1:
+                print(f"  -> {pre}体積結合があっても期待値より小さい"
+                      f"（上限 {ub:.2f} kPa/deg）。"
+                      "残差の主因とは考えにくい。")
+            else:
+                need = int(np.ceil(n_rep * (ub / 0.5) ** 2))
+                print(f"  -> 感度不足で判定できない（上限 {ub:.2f} kPa/deg は"
+                      f"期待値 1.1 より大きい）。--repeats {need} 以上で取り直す。")
+        else:
+            print("  -> 有効な点が無い。関節が振れているか確認すること。")
 
     if len(out[out["part"] == "B"]) and slack == "slack":
         print("\n[Part B] 判定しない（Part C が たるみ 陽性のため）。"
