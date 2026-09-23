@@ -142,6 +142,27 @@ def main() -> None:
         out = raw
     print(out.to_string(index=False))
 
+    # ---- 判定順序は Part C が先 -----------------------------------------
+    # たるみが有ると Part A / B / D の解釈が汚染される。特に Part A は
+    # たるみが有っても「体積結合は実在する」と、もっともらしい fc つきで
+    # 断言してしまう（合成ログで fc 2.00 -> 2.77 Hz に上振れしつつ
+    # 判定レンジ内に収まった）。順序を運用で守らせるのではなく、
+    # Part C の結論が出るまで Part A/B/D の判定文を出さない。
+    slack = report_part_c(out, n_rep)
+
+    if slack == "slack":
+        print("\n" + "!" * 68)
+        print("!! Part C が たるみ 陽性。以下 Part A / B / D の判定は信用しないこと。")
+        print("!! たるみは全バーストに効くので、dP/dtheta が一様に小さく出て")
+        print("!! fc は上振れする。fc をモデル同定に使ってはいけない。")
+        print("!! 先にワイヤを張り直して取り直すこと。")
+        print("!" * 68)
+    elif slack == "unknown":
+        print("\n" + "!" * 68)
+        print("!! Part C が判定不能。たるみの有無が確定していないので、")
+        print("!! 以下の Part A / B / D は暫定値として読むこと。")
+        print("!" * 68)
+
     a_all = out[out["part"] == "A"].sort_values("freq_Hz")
     # SNR が 3 に満たない点は使わない。高周波側は関節角振幅が小さくなるので
     # ここで落ちやすい。落ちた場合は --repeats を増やして取り直す。
@@ -179,7 +200,10 @@ def main() -> None:
         # しきい値 1.5 倍の根拠: 一次ハイパスが fc=1.8Hz なら
         # |H(1Hz)|=0.49, |H(3Hz)|=0.86, |H(8Hz)|=0.98 なので
         # 低域平均と高域平均の比は 1.7 程度にしかならない。2倍は厳しすぎる。
-        if np.isfinite(hi) and hi > 0.5 and hi > 1.5 * max(lo, 1e-6):
+        if slack == "slack":
+            print("  -> 判定しない（Part C が たるみ 陽性のため）。"
+                  "上の数値はたるみに汚染されている。")
+        elif np.isfinite(hi) and hi > 0.5 and hi > 1.5 * max(lo, 1e-6):
             print("  -> 高周波で立ち上がっている。体積結合は実在する。")
             if np.isfinite(fc_fit) and 0.9 <= fc_fit <= 4.0:
                 print("     fc も予想範囲内。圧力源の追従限界という説明と整合する。")
@@ -188,9 +212,33 @@ def main() -> None:
         else:
             print("  -> 判定保留。SNR とノイズ床を確認すること。")
 
+    if len(out[out["part"] == "B"]) and slack == "slack":
+        print("\n[Part B] 判定しない（Part C が たるみ 陽性のため）。"
+              "dP/dtheta ∝ P の検証はたるみが無い状態でしか成立しない。")
+
+    d = out[out["part"] == "D"]
+    if len(d) and len(a):
+        a3 = a[np.isclose(a["freq_Hz"], 3.0, atol=0.3)]
+        if len(a3):
+            print(f"\n[Part D] 位相 A(3Hz) {a3['phase_lag_deg'].iloc[0]:+.0f} deg "
+                  f"vs D {d['phase_lag_deg'].iloc[0]:+.0f} deg "
+                  "（拮抗対なら約180度ずれるはず）")
+            if slack == "slack":
+                # たるみが有ると D の動作点でも応答が消えるので、
+                # 「反転しない」がクロストークの証拠にならない。
+                print("  -> 根拠に使わない（Part C が たるみ 陽性のため）。"
+                      "反転しないのがクロストークのせいか たるみ のせいか"
+                      "区別できない。")
+
+    out.to_csv("volume_coupling_result.csv", index=False)
+    print("\nwrote volume_coupling_result.csv")
+
+
+def report_part_c(out: pd.DataFrame, n_rep: int) -> str:
+    """Part C を判定し "clean" / "slack" / "unknown" を返す。"""
     c = out[out["part"] == "C"].sort_values("ang_mean_deg")
     if len(c) >= 2:
-        print("\n[Part C] 動作点依存性（たるみの有無）")
+        print("\n[Part C] 動作点依存性（たるみの有無）＝ 最初に読むべきブロック")
         print(c[["segment", "ang_mean_deg", "ang_amp_deg",
                  "hold_ripple_kPa", "dPdtheta_kPa_per_deg", "sigma", "snr"]]
               .to_string(index=False))
@@ -219,7 +267,8 @@ def main() -> None:
                   f"chi2/dof = {red:.2f} (dof={dof})")
             if red < 2.0:
                 print("  -> ばらつきは測定誤差だけで説明できる。たるみの証拠なし。")
-            elif red > 4.0:
+                return "clean"
+            if red > 4.0:
                 lo = c[good].sort_values("ang_mean_deg").iloc[0]
                 print(f"  -> 誤差では説明できないばらつき。"
                       f"最小は平均 {lo['ang_mean_deg']:.0f} deg 付近。"
@@ -237,23 +286,13 @@ def main() -> None:
                     print("     ただし関節角に対して単調増加ではない。"
                           "たるみなら小角側から単調に増えるはずなので、"
                           "外れ値や計測系の異常も疑うこと。")
-            else:
-                need = int(np.ceil(n_rep * (red / 2.0) ** 2))
-                print(f"  -> 判定不能（誤差とも有意差とも言えない）。"
-                      f"--repeats {need} 以上で取り直すこと。")
-        else:
-            print("  -> SNR 不足の条件がある。判定不可。バーストを繰り返して再取得。")
-
-    d = out[out["part"] == "D"]
-    if len(d) and len(a):
-        a3 = a[np.isclose(a["freq_Hz"], 3.0, atol=0.3)]
-        if len(a3):
-            print(f"\n[Part D] 位相 A(3Hz) {a3['phase_lag_deg'].iloc[0]:+.0f} deg "
-                  f"vs D {d['phase_lag_deg'].iloc[0]:+.0f} deg "
-                  "（拮抗対なら約180度ずれるはず）")
-
-    out.to_csv("volume_coupling_result.csv", index=False)
-    print("\nwrote volume_coupling_result.csv")
+                return "slack"
+            need = int(np.ceil(n_rep * (red / 2.0) ** 2))
+            print(f"  -> 判定不能（誤差とも有意差とも言えない）。"
+                  f"--repeats {need} 以上で取り直すこと。")
+            return "unknown"
+        print("  -> 有効な点が足りない。判定不可。")
+    return "unknown"
 
 
 if __name__ == "__main__":
