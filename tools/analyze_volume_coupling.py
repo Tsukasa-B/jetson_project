@@ -114,6 +114,9 @@ def main() -> None:
             hold_ripple_kPa=round(a_hold, 2),
             noise_kPa=round(nz, 2),
             dPdtheta_kPa_per_deg=round(a_hold / a_ang, 3) if a_ang > 0.5 else np.nan,
+            # dP/dθ の 1σ。ロックイン振幅の誤差はノイズ床そのものなので
+            # そのまま関節角振幅で割る（角度側の誤差は 0.05deg/2.9deg で無視）。
+            sigma=round(nz / a_ang, 3) if a_ang > 0.5 else np.nan,
             phase_lag_deg=round(((ph_hold - ph_ang + 180) % 360) - 180, 1),
             exc_ripple_kPa=round(a_exc, 1),
             snr=round(a_hold / nz, 1) if nz > 0 else np.nan,
@@ -131,6 +134,7 @@ def main() -> None:
                         "part": "first", "hold_ch": "first"})
                   .reset_index())
         out["noise_kPa"] /= np.sqrt(n_rep)     # n回平均でノイズ床は 1/sqrt(n)
+        out["sigma"] /= np.sqrt(n_rep)
         out["snr"] = out["hold_ripple_kPa"] / out["noise_kPa"]
         out = out.round(3)
         print(f"(同一条件 {n_rep} 回を平均)")
@@ -188,18 +192,55 @@ def main() -> None:
     if len(c) >= 2:
         print("\n[Part C] 動作点依存性（たるみの有無）")
         print(c[["segment", "ang_mean_deg", "ang_amp_deg",
-                 "hold_ripple_kPa", "dPdtheta_kPa_per_deg", "snr"]]
+                 "hold_ripple_kPa", "dPdtheta_kPa_per_deg", "sigma", "snr"]]
               .to_string(index=False))
-        v = c["dPdtheta_kPa_per_deg"].values
-        if np.all(np.isfinite(v)) and np.all(c["snr"].values > 3.0):
-            spread = (np.nanmax(v) - np.nanmin(v)) / np.nanmean(v)
-            if spread < 0.3:
-                print(f"  -> 動作点によらず一定 (ばらつき {spread:.0%})。たるみの証拠なし。")
-            else:
-                lo = c.iloc[0]
-                print(f"  -> 動作点で {spread:.0%} 変わる。"
+
+        # 「何%ばらついたら たるみ とみなすか」を固定値で決めない。
+        # 各点には測定誤差 sigma があるので、ばらつきが誤差だけで説明できるか
+        # を chi2 で見る。定数モデル（＝たるみ無し）に対して
+        #   chi2 = sum((v_i - v_w)^2 / sigma_i^2),  dof = n-1
+        # 誤差だけで説明できるなら chi2/dof ~ 1 になる。
+        # Part A と違い、ここでは SNR の低い点を捨てない。
+        # たるみが有るなら小角側の応答は「ゼロ」になるのが予測であって、
+        # SNR<3 はノイズではなく信号そのもの。捨てると陽性が判定不能になる。
+        # （Part A では低SNR点は単なるノイズで、物理はゼロでない漸近値を
+        #   予測しているので、除外が正しい。）
+        v = c["dPdtheta_kPa_per_deg"].values.astype(float)
+        sg = c["sigma"].values.astype(float)
+        good = np.isfinite(v) & np.isfinite(sg) & (sg > 0)
+        if good.sum() >= 2:
+            w = 1.0 / sg[good] ** 2
+            vw = float(np.sum(w * v[good]) / np.sum(w))
+            chi2 = float(np.sum(((v[good] - vw) / sg[good]) ** 2))
+            dof = int(good.sum() - 1)
+            red = chi2 / dof
+            spread = (np.max(v[good]) - np.min(v[good])) / vw
+            print(f"  加重平均 {vw:.2f} kPa/deg, 実測ばらつき {spread:.0%}, "
+                  f"chi2/dof = {red:.2f} (dof={dof})")
+            if red < 2.0:
+                print("  -> ばらつきは測定誤差だけで説明できる。たるみの証拠なし。")
+            elif red > 4.0:
+                lo = c[good].sort_values("ang_mean_deg").iloc[0]
+                print(f"  -> 誤差では説明できないばらつき。"
                       f"最小は平均 {lo['ang_mean_deg']:.0f} deg 付近。"
                       "たるみのしきい角の候補。")
+                d = c[good].sort_values("ang_mean_deg")
+                if np.all(np.diff(d["dPdtheta_kPa_per_deg"].values) > 0):
+                    r0 = d.iloc[0]
+                    if abs(r0["dPdtheta_kPa_per_deg"]) < 2 * r0["sigma"]:
+                        print(f"     最小角 {r0['ang_mean_deg']:.0f} deg の応答は"
+                              f"ゼロと区別できない ({r0['dPdtheta_kPa_per_deg']:.2f}"
+                              f" +/- {r0['sigma']:.2f})。たるみの典型的な形。")
+                    else:
+                        print("     関節角に対して単調増加。たるみと整合する。")
+                else:
+                    print("     ただし関節角に対して単調増加ではない。"
+                          "たるみなら小角側から単調に増えるはずなので、"
+                          "外れ値や計測系の異常も疑うこと。")
+            else:
+                need = int(np.ceil(n_rep * (red / 2.0) ** 2))
+                print(f"  -> 判定不能（誤差とも有意差とも言えない）。"
+                      f"--repeats {need} 以上で取り直すこと。")
         else:
             print("  -> SNR 不足の条件がある。判定不可。バーストを繰り返して再取得。")
 
