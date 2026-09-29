@@ -1,0 +1,31 @@
+{
+  "model_key": "SI/policy",
+  "model_label": "policy: LSTM, lookahead=0.5s",
+  "model_file": "models/SI/policy.onnx",
+  "arch": "lstm",
+  "lookahead_horizon": 0.1,
+  "lookahead_steps": 5,
+  "frame_stack": 1,
+  "obs_dim": 15,
+  "manifest_extra": {
+    "note": "IROS実機データ IROS/deploy_results/modelD/ に対応"
+  },
+  "midi": "songs/test_single4_bpm60.mid",
+  "bpm": 60.0,
+  "trial": 1,
+  "control_dt": 0.02,
+  "p_max": 0.6,
+  "target_force": 20.0,
+  "qd_clip": 20.0,
+  "mock": false,
+  "verify": false,
+  "swap_encoders": false,
+  "elapsed_sec": 18.021,
+  "packets_received": 3602,
+  "packets_expected_at_200hz": 3604,
+  "packet_yield": 0.9994,
+  "bytes_discarded_on_resync": 0,
+  "control_steps": 901,
+  "git_rev": "unknown",
+  "timestamp": "2026-06-06T00:22:13+0000"
+}
