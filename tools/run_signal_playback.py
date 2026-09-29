@@ -156,7 +156,8 @@ class ExperimentController:
                     'cmd_time': idx * CONTROL_DT, 
                     'cmd_DF': cmd[0],
                     'cmd_F': cmd[1],
-                    'cmd_G': cmd[2]
+                    'cmd_G': cmd[2],
+                    'cmd_pc': time.perf_counter(),
                 })
 
                 # 50Hz周期維持
