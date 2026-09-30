@@ -177,6 +177,8 @@ def apply_time_source(df: pd.DataFrame, mode: str) -> pd.DataFrame:
                      乗るが、制御ループと同じ時計なのでドリフトは無い。
     """
     df = df.copy()
+    if "time_recon" in df.columns:   # 9/30以降のログ: time は発生時刻（補正済み）
+        return df
     if mode == "recon" or "t_recv_rel" not in df.columns:
         return df
     n = len(df)

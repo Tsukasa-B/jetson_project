@@ -173,6 +173,7 @@ class Deployer:
         self.policy.reset()
         self.receiver.clear_for_sync()
         t_start = time.perf_counter()
+        self.t_start = t_start
         step = 0
 
         try:
@@ -246,7 +247,14 @@ class Deployer:
         df = pd.DataFrame(sensor_logs)
         t_recv0 = df["t_recv"].iloc[0]
         df["t_recv_rel"] = df["t_recv"] - t_recv0          # 実測受信時刻（ジッタ確認用）
-        df["time"] = np.arange(len(df)) / SENSOR_RATE_HZ   # 再構成時刻（旧来と同じ定義）
+        df["time_recon"] = np.arange(len(df)) / SENSOR_RATE_HZ   # 旧定義（受信順×5ms）
+        # 実際の発生時刻: 受信時刻の下側包絡に直線を当て、シリアル転送時間を引く
+        k = np.arange(len(df))
+        tr = df["t_recv"].to_numpy(float)
+        coef = np.polyfit(k, tr, 1)
+        env = np.percentile(tr - np.polyval(coef, k), 2)
+        xfer = 58 * 10 / float(a.baud or 230400)
+        df["time"] = np.polyval(coef, k) + env - xfer - getattr(self, "t_start", tr[0])
 
         if self.cmd_logs:
             dc = pd.DataFrame(self.cmd_logs).rename(columns={"cmd_time": "time"})
@@ -276,6 +284,7 @@ class Deployer:
             "manifest_extra": self.spec.extra,
             "midi": a.midi, "bpm": float(self.rhythm.bpm), "trial": a.trial,
             "control_dt": self.dt, "p_max": self.spec.p_max,
+            "time_basis": "gen_envelope", "t_start": getattr(self, "t_start", None),
             "usb_latency_arg": a.usb_latency,
             "latency_timer": read_latency_timer(a.port or "/dev/ttyUSB0"),
             "target_force": self.spec.target_force, "qd_clip": QD_CLIP,
