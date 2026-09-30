@@ -145,6 +145,7 @@ class ExperimentController:
         self.receiver.clear_buffer_for_sync()
         
         try:
+            t0_abs = time.perf_counter()
             for idx, row in self.cmd_df.iterrows():
                 loop_start = time.perf_counter()
                 
@@ -161,7 +162,7 @@ class ExperimentController:
                 })
 
                 # 50Hz周期維持
-                while (time.perf_counter() - loop_start) < CONTROL_DT:
+                while time.perf_counter() < t0_abs + (idx + 1) * CONTROL_DT:
                     time.sleep(0.0005)
                     
         except KeyboardInterrupt:
