@@ -42,6 +42,8 @@ class SensorReceiver(threading.Thread):
         self.n_packets = 0
         self.n_dropped = 0          # ヘッダ同期を失って捨てたバイト数
         self._clear_flag = False
+        self._flush_req = False
+        self.n_rx_retry = 0
         self._lock = threading.Lock()
 
     def run(self):
@@ -49,6 +51,10 @@ class SensorReceiver(threading.Thread):
         buf = b""
         while self.running:
             try:
+                if self._flush_req:
+                    self.ser.reset_input_buffer()
+                    buf = b""
+                    self._flush_req = False
                 n = self.ser.in_waiting
                 if n > 0:
                     buf += self.ser.read(n)
@@ -68,6 +74,9 @@ class SensorReceiver(threading.Thread):
                 else:
                     time.sleep(0.001)
             except Exception as e:  # noqa: BLE001
+                if "returned no data" in str(e):
+                    self.n_rx_retry += 1     # 競合による空読み。止めずに続ける
+                    continue
                 print(f"[Rx Error] {e}")
                 self.running = False
 
@@ -99,8 +108,8 @@ class SensorReceiver(threading.Thread):
 
     def clear_for_sync(self):
         """t=0 を揃えるため、USBバッファとログを一掃する。"""
-        self.ser.reset_input_buffer()
         with self._lock:
+            self._flush_req = True
             self._clear_flag = True
 
     def get_latest(self):

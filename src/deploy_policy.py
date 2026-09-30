@@ -60,8 +60,20 @@ def parse_args():
                    help="obs/actionの系列を .npz に保存（パリティ検証用）")
     p.add_argument("--swap_encoders", action="store_true",
                    help="手首/ハンド関節エンコーダの配線が逆のとき、受信角度2chを入れ替える")
+    p.add_argument("--usb_latency", type=int, choices=[1, 16], default=None,
+                   help="USB変換の溜め込み時間[ms]。1 または 16。省略時は変更しない")
     p.add_argument("--list", action="store_true", help="manifest のモデル一覧を表示して終了")
     return p.parse_args()
+
+
+def read_latency_timer(port: str):
+    """sysfs の latency_timer を読む。読めなければ None。"""
+    name = os.path.basename(os.path.realpath(port))
+    try:
+        with open(f"/sys/bus/usb-serial/devices/{name}/latency_timer") as f:
+            return int(f.read().strip())
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def git_rev() -> str:
@@ -101,6 +113,9 @@ class Deployer:
             baud = args.baud or int(defaults.get("baud_rate", 230400))
             print(f"[Link] {port} @ {baud}")
             self.ser = open_serial(port, baud)
+            if args.usb_latency is not None:
+                self.ser.set_low_latency_mode(args.usb_latency == 1)
+            print(f"[Link] latency_timer = {read_latency_timer(port)}")
         self.receiver = SensorReceiver(self.ser, swap_encoders=args.swap_encoders)
         self.receiver.start()
 
@@ -186,6 +201,7 @@ class Deployer:
                     action, cmd = self.policy.action_to_pressure(action)
                     self.prev_action = action
                     send_pressure(self.ser, *cmd)
+                t_send = time.perf_counter()
 
                 if a.dump_obs:
                     self.obs_dump.append(obs.reshape(-1).copy())
@@ -196,6 +212,7 @@ class Deployer:
                     "action_DF": float(action[0]), "action_F": float(action[1]),
                     "action_G": float(action[2]),
                     "cmd_DF": float(cmd[0]), "cmd_F": float(cmd[1]), "cmd_G": float(cmd[2]),
+                    "obs_t_recv": float(sensor["t_recv"]), "t_send": t_send,
                 })
 
                 step += 1
@@ -259,6 +276,8 @@ class Deployer:
             "manifest_extra": self.spec.extra,
             "midi": a.midi, "bpm": float(self.rhythm.bpm), "trial": a.trial,
             "control_dt": self.dt, "p_max": self.spec.p_max,
+            "usb_latency_arg": a.usb_latency,
+            "latency_timer": read_latency_timer(a.port or "/dev/ttyUSB0"),
             "target_force": self.spec.target_force, "qd_clip": QD_CLIP,
             "mock": bool(a.mock), "verify": bool(a.verify),
             "swap_encoders": bool(a.swap_encoders),
@@ -307,3 +326,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
